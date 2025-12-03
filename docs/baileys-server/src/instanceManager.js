@@ -10,7 +10,8 @@ const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
 
-const logger = pino({ level: 'silent' });
+// Change to 'info' to see Baileys logs, 'silent' to hide them
+const logger = pino({ level: 'warn' });
 
 class InstanceManager {
   constructor() {
@@ -59,7 +60,12 @@ class InstanceManager {
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: ['Lovable WhatsApp', 'Chrome', '120.0.0'],
+        browser: ['Ubuntu', 'Chrome', '120.0.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        connectTimeoutMs: 60000,
+        qrTimeout: 60000,
+        defaultQueryTimeoutMs: 60000,
         getMessage: async (key) => {
           const msg = await store.loadMessage(key.remoteJid, key.id);
           return msg?.message || undefined;
