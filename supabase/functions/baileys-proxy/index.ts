@@ -18,7 +18,10 @@ serve(async (req) => {
     const path = url.searchParams.get("path") || "";
     const targetUrl = `${BAILEYS_SERVER_URL}${path}`;
 
-    console.log(`Proxying request to: ${targetUrl}`);
+    const body = req.method !== "GET" && req.method !== "HEAD" ? await req.text() : undefined;
+    
+    console.log(`Proxying ${req.method} to: ${targetUrl}`);
+    console.log(`Request body: ${body}`);
 
     // Forward the request to Baileys server
     const response = await fetch(targetUrl, {
@@ -26,7 +29,7 @@ serve(async (req) => {
       headers: {
         "Content-Type": "application/json",
       },
-      body: req.method !== "GET" && req.method !== "HEAD" ? await req.text() : undefined,
+      body,
     });
 
     const data = await response.text();
