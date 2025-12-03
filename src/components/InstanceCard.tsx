@@ -59,9 +59,15 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         updateInstanceStatus(instance.id, 'qr_pending', response.data.qrCode);
       } else if (response.error === 'Instance not found') {
         // Instance was removed from server (server restart, etc)
-        console.log(`[InstanceCard] Instância ${instance.id} não encontrada no servidor`);
-        updateInstanceStatus(instance.id, 'disconnected');
+        console.log(`[InstanceCard] Instância ${instance.id} não encontrada no servidor, parando polling`);
+        // Stop polling immediately
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
         setIsPolling(false);
+        setCurrentQR(undefined);
+        updateInstanceStatus(instance.id, 'disconnected');
       } else {
         // QR not available yet, keep polling silently
         console.log(`[InstanceCard] QR ainda não disponível para ${instance.id}, aguardando...`);
