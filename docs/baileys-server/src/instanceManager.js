@@ -3,7 +3,8 @@ const {
   DisconnectReason, 
   useMultiFileAuthState,
   makeInMemoryStore,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
@@ -161,15 +162,17 @@ class InstanceManager {
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: ['Ubuntu', 'Chrome', '120.0.0'],
+        // Use browser signature that WhatsApp trusts more
+        browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
-        markOnlineOnConnect: true,
-        fireInitQueries: true,
+        markOnlineOnConnect: false, // Don't mark online immediately
+        fireInitQueries: false, // Don't fire queries immediately
         connectTimeoutMs: 60000,
-        qrTimeout: 60000,
-        defaultQueryTimeoutMs: 60000,
-        retryRequestDelayMs: 2000,
-        keepAliveIntervalMs: 25000,
+        qrTimeout: 40000, // Shorter QR timeout
+        defaultQueryTimeoutMs: 30000,
+        retryRequestDelayMs: 3000,
+        keepAliveIntervalMs: 30000,
+        emitOwnEvents: true,
         getMessage: async (key) => {
           const msg = await store.loadMessage(key.remoteJid, key.id);
           return msg?.message || undefined;
@@ -534,15 +537,16 @@ class InstanceManager {
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: ['Ubuntu', 'Chrome', '120.0.0'],
+        browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
-        markOnlineOnConnect: true,
-        fireInitQueries: true,
+        markOnlineOnConnect: false,
+        fireInitQueries: false,
         connectTimeoutMs: 60000,
-        qrTimeout: 60000,
-        defaultQueryTimeoutMs: 60000,
-        retryRequestDelayMs: 2000,
-        keepAliveIntervalMs: 25000,
+        qrTimeout: 40000,
+        defaultQueryTimeoutMs: 30000,
+        retryRequestDelayMs: 3000,
+        keepAliveIntervalMs: 30000,
+        emitOwnEvents: true,
         getMessage: async (key) => {
           const msg = await instance.store.loadMessage(key.remoteJid, key.id);
           return msg?.message || undefined;
