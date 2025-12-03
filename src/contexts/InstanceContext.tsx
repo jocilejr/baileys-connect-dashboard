@@ -40,22 +40,41 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
 
   // Load instances from server on mount
   const refreshInstances = useCallback(async () => {
+    console.log('[InstanceContext] Carregando instâncias do servidor...');
     try {
       const response = await baileysApi.listInstances();
+      console.log('[InstanceContext] Resposta do servidor:', response);
+      
       if (response.success && response.data) {
-        const serverInstances: Instance[] = response.data.map((inst) => ({
-          // Server returns 'id' field, not 'instanceId'
-          id: inst.id || inst.instanceId,
-          name: inst.name || inst.id || inst.instanceId,
-          phone: inst.phone,
-          status: (inst.status as InstanceStatus) || 'disconnected',
-          createdAt: new Date(),
-          apiKey: generateApiKey(),
-        }));
+        // Se o servidor retornar lista vazia, limpar instâncias locais
+        if (response.data.length === 0) {
+          console.log('[InstanceContext] Servidor retornou lista vazia, limpando estado local');
+          setInstances([]);
+          return;
+        }
+        
+        const serverInstances: Instance[] = response.data.map((inst) => {
+          const id = inst.id || inst.instanceId || '';
+          console.log(`[InstanceContext] Processando instância: ${id}, status: ${inst.status}`);
+          return {
+            id,
+            name: inst.name || id,
+            phone: inst.phone,
+            status: (inst.status as InstanceStatus) || 'disconnected',
+            createdAt: new Date(),
+            apiKey: generateApiKey(),
+          };
+        });
         setInstances(serverInstances);
+      } else {
+        // Erro ou sem dados - limpar estado local
+        console.log('[InstanceContext] Sem dados do servidor, limpando estado local');
+        setInstances([]);
       }
     } catch (error) {
-      console.error('Erro ao carregar instâncias:', error);
+      console.error('[InstanceContext] Erro ao carregar instâncias:', error);
+      // Em caso de erro, limpar estado para evitar dados inconsistentes
+      setInstances([]);
     } finally {
       setIsLoading(false);
     }

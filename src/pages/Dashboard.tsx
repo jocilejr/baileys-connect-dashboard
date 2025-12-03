@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { InstanceCard } from '@/components/InstanceCard';
 import { SendMessageDialog } from '@/components/SendMessageDialog';
@@ -8,14 +8,28 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useInstances } from '@/contexts/InstanceContext';
 import { Instance } from '@/types/instance';
-import { Plus, Smartphone, MessageSquare, Wifi, WifiOff } from 'lucide-react';
+import { Plus, Smartphone, MessageSquare, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 
 const Dashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
   const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const [createInstanceOpen, setCreateInstanceOpen] = useState(false);
-  const { instances } = useInstances();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const { instances, isLoading, refreshInstances } = useInstances();
+
+  // Refresh instances on mount and when tab changes to instances
+  useEffect(() => {
+    if (activeTab === 'instances' || activeTab === 'dashboard') {
+      refreshInstances();
+    }
+  }, [activeTab, refreshInstances]);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await refreshInstances();
+    setIsRefreshing(false);
+  };
 
   const connectedCount = instances.filter(i => i.status === 'connected').length;
   const disconnectedCount = instances.filter(i => i.status === 'disconnected').length;
@@ -98,10 +112,16 @@ const Dashboard: React.FC = () => {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Instâncias Recentes</CardTitle>
-                <Button onClick={() => setCreateInstanceOpen(true)} className="gap-2">
-                  <Plus className="w-4 h-4" />
-                  Nova Instância
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing} className="gap-2">
+                    <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                    Atualizar
+                  </Button>
+                  <Button onClick={() => setCreateInstanceOpen(true)} className="gap-2">
+                    <Plus className="w-4 h-4" />
+                    Nova Instância
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {instances.length === 0 ? (
@@ -140,10 +160,16 @@ const Dashboard: React.FC = () => {
                 <h2 className="text-2xl font-bold">Instâncias</h2>
                 <p className="text-muted-foreground">Gerencie suas conexões do WhatsApp</p>
               </div>
-              <Button onClick={() => setCreateInstanceOpen(true)} className="gap-2">
-                <Plus className="w-4 h-4" />
-                Nova Instância
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing} className="gap-2">
+                  <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  Atualizar
+                </Button>
+                <Button onClick={() => setCreateInstanceOpen(true)} className="gap-2">
+                  <Plus className="w-4 h-4" />
+                  Nova Instância
+                </Button>
+              </div>
             </div>
 
             {instances.length === 0 ? (
