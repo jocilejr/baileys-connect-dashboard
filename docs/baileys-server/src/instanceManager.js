@@ -215,135 +215,161 @@ class InstanceManager {
           // 2. Same number is connected on another instance
           // 3. WhatsApp kicks the device for security reasons
           if (statusCode === 401 || isDeviceRemoved) {
-            console.log(`[${instanceId}] Device removed or unauthorized (401) - marking as disconnected`);
+            const wasRecovering515 = instance.recovering515;
+            const recoveryAge = instance.recovery515Time ? (Date.now() - instance.recovery515Time) : 0;
             
-            // IMPORTANT: Send notification BEFORE cleaning up
+            console.log(`[${instanceId}] Device removed (401), wasRecovering515=${wasRecovering515}, recoveryAge=${recoveryAge}ms`);
+            
+            // Clean up socket
+            try {
+              socket.ev.removeAllListeners();
+              socket.ws?.close();
+            } catch (e) {}
+            
+            // Delete session files since device was removed
+            const sessionPath = path.join(this.sessionsPath, instanceId);
+            if (fs.existsSync(sessionPath)) {
+              console.log(`[${instanceId}] Deleting session files after 401...`);
+              try {
+                fs.rmSync(sessionPath, { recursive: true });
+              } catch (e) {
+                console.log(`[${instanceId}] Error deleting session:`, e.message);
+              }
+            }
+            
+            // Reset instance state
             instance.status = 'disconnected';
-            const phone = instance.phone;
             instance.qrCode = null;
             instance.phone = null;
             instance.hadNewLogin = false;
+            instance.recovering515 = false;
+            instance.recovery515Time = null;
             this.reconnecting.delete(instanceId);
             
-            // Send notification immediately
-            console.log(`[${instanceId}] Sending disconnect notification to frontend...`);
+            // If we were recovering from 515 (just scanned QR) and got 401 quickly,
+            // this is a DEVICE CONFLICT - another device is already connected
+            // In this case, automatically generate a new QR so user can try again
+            if (wasRecovering515 && recoveryAge < 60000) {
+              console.log(`[${instanceId}] 401 after 515 recovery - device conflict detected, generating new QR...`);
+              
+              // Notify frontend about the conflict
+              this.notifyWebSocket(instanceId, {
+                type: 'status',
+                status: 'qr_pending',
+                reason: 'device_conflict'
+              });
+              
+              // Wait a bit before generating new QR
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              
+              instance.status = 'qr_pending';
+              console.log(`[${instanceId}] Creating fresh socket for new QR after device conflict...`);
+              this.createInstance(instanceId, instance.name, instance.webhookUrl);
+              return;
+            }
+            
+            // Normal 401 - just mark as disconnected
+            console.log(`[${instanceId}] Normal 401 disconnect - marking as disconnected`);
             this.notifyWebSocket(instanceId, {
               type: 'status',
               status: 'disconnected',
               reason: 'device_removed'
             });
             
-            // Wait a moment for notification to be sent
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Delete session files since device was removed
-            const sessionPath = path.join(this.sessionsPath, instanceId);
-            if (fs.existsSync(sessionPath)) {
-              console.log(`[${instanceId}] Deleting session files after 401...`);
-              fs.rmSync(sessionPath, { recursive: true });
-            }
-            
             return;
           }
           
           // Handle stream errors (515) - This happens after pairing completes
           if (statusCode === 515) {
-            console.log(`[${instanceId}] Stream error 515, hadNewLogin: ${instance.hadNewLogin}`);
+            const wasNewLogin = instance.hadNewLogin;
+            console.log(`[${instanceId}] Stream error 515, hadNewLogin: ${wasNewLogin}`);
             
-            const sessionPath = path.join(this.sessionsPath, instanceId);
-            
-            // CRITICAL: If this was a NEW LOGIN (QR scan), ALWAYS generate new QR
-            // The credentials saved during 515 after new login are INCOMPLETE
-            // They will pass basic validation but WhatsApp will reject them with 401
-            if (instance.hadNewLogin) {
-              console.log(`[${instanceId}] 515 after NEW LOGIN - credentials are incomplete, generating fresh QR`);
-              
-              // Delete the incomplete session
-              if (fs.existsSync(sessionPath)) {
-                console.log(`[${instanceId}] Deleting incomplete session files...`);
-                try {
-                  fs.rmSync(sessionPath, { recursive: true });
-                } catch (e) {
-                  console.log(`[${instanceId}] Error deleting session:`, e.message);
-                }
-              }
-              
-              instance.hadNewLogin = false;
-              instance.qrCode = null;
-              instance.phone = null;
-              instance.status = 'qr_pending';
-              
-              try {
-                socket.ev.removeAllListeners();
-                socket.ws?.close();
-              } catch (e) {
-                console.log(`[${instanceId}] Error cleaning up socket:`, e.message);
-              }
-              
-              // Wait before generating new QR
-              console.log(`[${instanceId}] Waiting 3 seconds before generating new QR...`);
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              
-              this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
-              
-              console.log(`[${instanceId}] Creating fresh socket for new QR...`);
-              this.createInstance(instanceId, instance.name, instance.webhookUrl);
-              return;
+            // Clean up current socket
+            try {
+              socket.ev.removeAllListeners();
+              socket.ws?.close();
+            } catch (e) {
+              console.log(`[${instanceId}] Error cleaning up socket:`, e.message);
             }
             
-            // For EXISTING sessions (not new login), check credentials and reconnect
+            // IMPORTANT: Wait for credentials to be fully written to disk
+            // The 515 comes very quickly after QR scan, credentials might not be complete yet
+            const waitTime = wasNewLogin ? 8000 : 3000;
+            console.log(`[${instanceId}] Waiting ${waitTime/1000}s for credentials to sync...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            
+            const sessionPath = path.join(this.sessionsPath, instanceId);
             const credsPath = path.join(sessionPath, 'creds.json');
+            
+            // Check if credentials are complete with STRICT validation
             let credsValid = false;
+            let credsContent = null;
             
             if (fs.existsSync(credsPath)) {
               try {
                 const credsSize = fs.statSync(credsPath).size;
-                const credsContent = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
-                // Strict validation for existing sessions
-                credsValid = credsSize > 2000 && 
-                             credsContent.me?.id && 
-                             credsContent.noiseKey && 
-                             credsContent.signedIdentityKey &&
-                             credsContent.registrationId;
-                console.log(`[${instanceId}] Credentials check: size=${credsSize}, valid=${credsValid}`);
+                credsContent = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+                
+                // STRICT validation - all required fields must exist
+                const hasMe = credsContent.me?.id;
+                const hasNoiseKey = !!credsContent.noiseKey;
+                const hasSignedIdentityKey = !!credsContent.signedIdentityKey;
+                const hasRegistrationId = !!credsContent.registrationId;
+                const hasSignedPreKey = !!credsContent.signedPreKey;
+                const hasAdvSecretKey = !!credsContent.advSecretKey;
+                
+                credsValid = credsSize > 1500 && 
+                             hasMe && 
+                             hasNoiseKey && 
+                             hasSignedIdentityKey && 
+                             hasRegistrationId &&
+                             hasSignedPreKey;
+                
+                console.log(`[${instanceId}] Credentials check: size=${credsSize}, me=${hasMe}, noise=${hasNoiseKey}, signedId=${hasSignedIdentityKey}, reg=${hasRegistrationId}, signedPre=${hasSignedPreKey}, valid=${credsValid}`);
               } catch (e) {
                 console.log(`[${instanceId}] Error reading credentials:`, e.message);
               }
+            } else {
+              console.log(`[${instanceId}] No credentials file found`);
             }
             
-            if (!credsValid) {
-              console.log(`[${instanceId}] 515 with invalid credentials - generating new QR`);
+            // If credentials are valid, try to reconnect
+            if (credsValid) {
+              console.log(`[${instanceId}] Credentials valid - attempting reconnect...`);
+              instance.hadNewLogin = false;
               
-              if (fs.existsSync(sessionPath)) {
-                try {
-                  fs.rmSync(sessionPath, { recursive: true });
-                } catch (e) {
-                  console.log(`[${instanceId}] Error deleting session:`, e.message);
-                }
+              // Track that we're recovering from 515 after new login
+              // If we get 401 within 60 seconds, we should NOT generate new QR (device conflict)
+              if (wasNewLogin) {
+                instance.recovering515 = true;
+                instance.recovery515Time = Date.now();
               }
               
-              instance.status = 'qr_pending';
-              instance.qrCode = null;
-              instance.phone = null;
-              
-              try {
-                socket.ev.removeAllListeners();
-              } catch (e) {}
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
-              this.createInstance(instanceId, instance.name, instance.webhookUrl);
+              this.reconnectWithoutDeletingSession(instanceId);
               return;
             }
             
-            console.log(`[${instanceId}] 515 on existing session with valid credentials - reconnecting...`);
+            // Credentials invalid or missing - need new QR
+            console.log(`[${instanceId}] Credentials invalid/incomplete - generating new QR`);
             
-            try {
-              socket.ev.removeAllListeners();
-            } catch (e) {}
+            if (fs.existsSync(sessionPath)) {
+              try {
+                fs.rmSync(sessionPath, { recursive: true });
+              } catch (e) {
+                console.log(`[${instanceId}] Error deleting session:`, e.message);
+              }
+            }
             
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            this.reconnectWithoutDeletingSession(instanceId);
+            instance.hadNewLogin = false;
+            instance.qrCode = null;
+            instance.phone = null;
+            instance.status = 'qr_pending';
+            
+            this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
+            
+            console.log(`[${instanceId}] Creating fresh socket for new QR...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            this.createInstance(instanceId, instance.name, instance.webhookUrl);
             return;
           }
           
@@ -396,6 +422,8 @@ class InstanceManager {
           instance.qrCode = null;
           instance.phone = phone;
           instance.hadNewLogin = false;
+          instance.recovering515 = false;
+          instance.recovery515Time = null;
           this.reconnecting.delete(instanceId);
           
           // Send presence update to sync with phone
@@ -531,38 +559,70 @@ class InstanceManager {
           
           // Handle 401 (Unauthorized) - device was removed from WhatsApp
           if (statusCode === 401 || isDeviceRemoved) {
-            console.log(`[${instanceId}] Device removed during reconnect (401) - marking as disconnected`);
+            const wasRecovering515 = instance.recovering515;
+            const recoveryAge = instance.recovery515Time ? (Date.now() - instance.recovery515Time) : 0;
             
-            // IMPORTANT: Send notification BEFORE cleaning up
-            instance.status = 'disconnected';
-            instance.qrCode = null;
-            instance.phone = null;
-            instance.hadNewLogin = false;
-            this.reconnecting.delete(instanceId);
+            console.log(`[${instanceId}] 401 during reconnect, wasRecovering515=${wasRecovering515}, recoveryAge=${recoveryAge}ms`);
             
-            // Send notification immediately
-            console.log(`[${instanceId}] Sending disconnect notification to frontend...`);
-            this.notifyWebSocket(instanceId, {
-              type: 'status',
-              status: 'disconnected',
-              reason: 'device_removed'
-            });
-            
-            // Wait for notification to be sent
-            await new Promise(resolve => setTimeout(resolve, 500));
+            // Clean up socket
+            try {
+              socket.ev.removeAllListeners();
+              socket.ws?.close();
+            } catch (e) {}
             
             // Delete session files
             const sessionPath = path.join(this.sessionsPath, instanceId);
             if (fs.existsSync(sessionPath)) {
               console.log(`[${instanceId}] Deleting session files after 401...`);
-              fs.rmSync(sessionPath, { recursive: true });
+              try {
+                fs.rmSync(sessionPath, { recursive: true });
+              } catch (e) {
+                console.log(`[${instanceId}] Error deleting session:`, e.message);
+              }
             }
+            
+            // Reset instance state
+            instance.status = 'disconnected';
+            instance.qrCode = null;
+            instance.phone = null;
+            instance.hadNewLogin = false;
+            instance.recovering515 = false;
+            instance.recovery515Time = null;
+            this.reconnecting.delete(instanceId);
+            
+            // If we were recovering from 515, this is a device conflict
+            // Generate new QR automatically so user can try again
+            if (wasRecovering515 && recoveryAge < 60000) {
+              console.log(`[${instanceId}] Device conflict after 515 - generating new QR...`);
+              
+              this.notifyWebSocket(instanceId, {
+                type: 'status',
+                status: 'qr_pending',
+                reason: 'device_conflict'
+              });
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              
+              instance.status = 'qr_pending';
+              console.log(`[${instanceId}] Creating fresh socket for new QR...`);
+              this.createInstance(instanceId, instance.name, instance.webhookUrl);
+              return;
+            }
+            
+            // Normal 401 - just disconnect
+            this.notifyWebSocket(instanceId, {
+              type: 'status',
+              status: 'disconnected',
+              reason: 'device_removed'
+            });
             return;
           }
           
           if (statusCode === DisconnectReason.loggedOut) {
             instance.status = 'disconnected';
             instance.phone = null;
+            instance.recovering515 = false;
+            instance.recovery515Time = null;
             this.reconnecting.delete(instanceId);
             this.notifyWebSocket(instanceId, { type: 'status', status: 'disconnected' });
           }
@@ -579,6 +639,9 @@ class InstanceManager {
           instance.status = 'connected';
           instance.qrCode = null;
           instance.phone = phone;
+          instance.hadNewLogin = false;
+          instance.recovering515 = false;
+          instance.recovery515Time = null;
           this.reconnecting.delete(instanceId);
           
           try {
