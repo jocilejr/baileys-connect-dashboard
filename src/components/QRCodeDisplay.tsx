@@ -1,0 +1,71 @@
+import React, { useEffect, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
+import { cn } from '@/lib/utils';
+import { RefreshCw, Smartphone } from 'lucide-react';
+import { Button } from './ui/button';
+
+interface QRCodeDisplayProps {
+  qrCode: string;
+  onRefresh?: () => void;
+  className?: string;
+}
+
+export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ 
+  qrCode, 
+  onRefresh,
+  className 
+}) => {
+  const [countdown, setCountdown] = useState(60);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          onRefresh?.();
+          return 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [onRefresh]);
+
+  return (
+    <div className={cn('flex flex-col items-center gap-4', className)}>
+      <div className="relative p-4 bg-card rounded-2xl border border-border shadow-lg">
+        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent rounded-2xl" />
+        <div className="relative bg-card p-4 rounded-xl">
+          <QRCodeSVG
+            value={qrCode}
+            size={200}
+            level="M"
+            includeMargin={false}
+            className="rounded-lg"
+          />
+        </div>
+        <div className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs font-bold px-2 py-1 rounded-full">
+          {countdown}s
+        </div>
+      </div>
+      
+      <div className="text-center space-y-2">
+        <div className="flex items-center justify-center gap-2 text-muted-foreground text-sm">
+          <Smartphone className="w-4 h-4" />
+          <span>Escaneie com o WhatsApp</span>
+        </div>
+        <ol className="text-xs text-muted-foreground space-y-1">
+          <li>1. Abra o WhatsApp no celular</li>
+          <li>2. Toque em Menu &gt; Aparelhos conectados</li>
+          <li>3. Toque em Conectar um aparelho</li>
+          <li>4. Aponte a câmera para este código</li>
+        </ol>
+      </div>
+
+      <Button variant="outline" size="sm" onClick={onRefresh} className="gap-2">
+        <RefreshCw className="w-4 h-4" />
+        Atualizar QR Code
+      </Button>
+    </div>
+  );
+};
