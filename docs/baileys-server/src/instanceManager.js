@@ -2,7 +2,8 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { 
   DisconnectReason, 
   useMultiFileAuthState,
-  Browsers
+  Browsers,
+  fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
@@ -10,6 +11,7 @@ const fs = require('fs');
 const QRCode = require('qrcode');
 
 const logger = pino({ level: 'silent' });
+let cachedVersion = null;
 
 class InstanceManager {
   constructor() {
@@ -144,13 +146,25 @@ class InstanceManager {
     this.saveInstancesToFile();
 
     try {
-      console.log(`[${instanceId}] Creating Baileys socket (default version)`);
+      // Fetch latest version from WhatsApp servers
+      if (!cachedVersion) {
+        try {
+          const { version } = await fetchLatestBaileysVersion();
+          cachedVersion = version;
+          console.log(`[${instanceId}] Fetched WhatsApp version: ${version.join('.')}`);
+        } catch (e) {
+          console.log(`[${instanceId}] Could not fetch version, using default`);
+        }
+      }
+
+      console.log(`[${instanceId}] Creating Baileys socket${cachedVersion ? ` (v${cachedVersion.join('.')})` : ''}`);
 
       const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome')
+        browser: Browsers.ubuntu('Chrome'),
+        ...(cachedVersion && { version: cachedVersion })
       });
 
       instance.socket = socket;
@@ -295,13 +309,25 @@ class InstanceManager {
     try {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
       
-      console.log(`[${instanceId}] Reconnecting Baileys socket (default version)`);
+      // Refresh version on reconnect if needed
+      if (!cachedVersion) {
+        try {
+          const { version } = await fetchLatestBaileysVersion();
+          cachedVersion = version;
+          console.log(`[${instanceId}] Fetched WhatsApp version: ${version.join('.')}`);
+        } catch (e) {
+          console.log(`[${instanceId}] Could not fetch version, using default`);
+        }
+      }
+
+      console.log(`[${instanceId}] Reconnecting Baileys socket${cachedVersion ? ` (v${cachedVersion.join('.')})` : ''}`);
 
       const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome')
+        browser: Browsers.ubuntu('Chrome'),
+        ...(cachedVersion && { version: cachedVersion })
       });
 
       instance.socket = socket;
