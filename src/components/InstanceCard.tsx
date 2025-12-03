@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Instance, InstanceStatus } from '@/types/instance';
 import { StatusBadge } from './StatusBadge';
 import { QRCodeDisplay } from './QRCodeDisplay';
@@ -24,6 +24,7 @@ import {
 } from './ui/dropdown-menu';
 import { useInstances } from '@/contexts/InstanceContext';
 import { useBaileysWebSocket } from '@/hooks/useBaileysWebSocket';
+import { baileysApi } from '@/services/baileysApi';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -41,10 +42,54 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const { removeInstance, updateInstanceStatus, reconnectInstance } = useInstances();
   const [copied, setCopied] = useState(false);
   const [currentQR, setCurrentQR] = useState<string | undefined>(instance.qrCode);
+  const [isPolling, setIsPolling] = useState(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // HTTP polling for QR code as fallback
+  const pollForQRCode = useCallback(async () => {
+    if (instance.status !== 'qr_pending' && instance.status !== 'connecting') return;
+    
+    try {
+      const response = await baileysApi.getQRCode(instance.id);
+      if (response.success && response.data?.qrCode) {
+        console.log(`[InstanceCard] QR Code obtido via HTTP para ${instance.id}`);
+        setCurrentQR(response.data.qrCode);
+        updateInstanceStatus(instance.id, 'qr_pending', response.data.qrCode);
+      }
+    } catch (error) {
+      console.error('[InstanceCard] Erro ao buscar QR code:', error);
+    }
+  }, [instance.id, instance.status, updateInstanceStatus]);
+
+  // Start polling when status is qr_pending and no QR code
+  useEffect(() => {
+    const shouldPoll = (instance.status === 'qr_pending' || instance.status === 'connecting') && !currentQR;
+    
+    if (shouldPoll && !isPolling) {
+      setIsPolling(true);
+      // Poll immediately
+      pollForQRCode();
+      // Then poll every 2 seconds
+      pollIntervalRef.current = setInterval(pollForQRCode, 2000);
+    } else if (!shouldPoll && isPolling) {
+      setIsPolling(false);
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [instance.status, currentQR, isPolling, pollForQRCode]);
 
   // WebSocket handlers
   const handleQRCode = useCallback((qr: string) => {
-    console.log(`[InstanceCard] QR Code recebido para ${instance.id}`);
+    console.log(`[InstanceCard] QR Code recebido via WebSocket para ${instance.id}`);
     setCurrentQR(qr);
     updateInstanceStatus(instance.id, 'qr_pending', qr);
   }, [instance.id, updateInstanceStatus]);
@@ -99,6 +144,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleConnect = async () => {
+    setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
     toast({
       title: 'Gerando QR Code...',
@@ -107,6 +153,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleDisconnect = () => {
+    setCurrentQR(undefined);
     updateInstanceStatus(instance.id, 'disconnected');
     toast({
       title: 'Desconectado',
@@ -125,6 +172,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleRefreshQR = async () => {
+    setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
   };
 

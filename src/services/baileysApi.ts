@@ -91,6 +91,10 @@ export const baileysApi = {
     return proxyRequest<InstanceStatusResponse>(`/api/v1/instance/${instanceId}/status`);
   },
 
+  getQRCode: async (instanceId: string): Promise<ApiResponse<{ qrCode: string | null }>> => {
+    return proxyRequest<{ qrCode: string | null }>(`/api/v1/instance/${instanceId}/qr`);
+  },
+
   deleteInstance: async (instanceId: string): Promise<ApiResponse<void>> => {
     return proxyRequest<void>(`/api/v1/instance/${instanceId}`, {
       method: 'DELETE',
