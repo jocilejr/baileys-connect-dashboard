@@ -246,11 +246,12 @@ class InstanceManager {
             instance.recovery515Time = null;
             this.reconnecting.delete(instanceId);
             
-            // If we were recovering from 515 (just scanned QR) and got 401 quickly,
+            // If we were recovering from 515 (just scanned QR) and got 401,
             // this is a DEVICE CONFLICT - another device is already connected
             // In this case, automatically generate a new QR so user can try again
-            if (wasRecovering515 && recoveryAge < 60000) {
-              console.log(`[${instanceId}] 401 after 515 recovery - device conflict detected, generating new QR...`);
+            // Check within 2 minutes (120 seconds) of recovery start
+            if (wasRecovering515 && recoveryAge < 120000) {
+              console.log(`[${instanceId}] 401 after 515 recovery (${recoveryAge}ms) - device conflict, generating new QR...`);
               
               // Notify frontend about the conflict
               this.notifyWebSocket(instanceId, {
@@ -422,9 +423,22 @@ class InstanceManager {
           instance.qrCode = null;
           instance.phone = phone;
           instance.hadNewLogin = false;
-          instance.recovering515 = false;
-          instance.recovery515Time = null;
           this.reconnecting.delete(instanceId);
+          
+          // DON'T clear recovering515 immediately - keep it for 2 minutes
+          // so that if a 401 comes after connection opens, we still detect it
+          // as part of the recovery process and auto-generate new QR
+          if (instance.recovering515) {
+            console.log(`[${instanceId}] Connection opened during 515 recovery - keeping recovery flag for 2 minutes`);
+            // Clear the flag after 2 minutes of stable connection
+            setTimeout(() => {
+              if (instance.status === 'connected') {
+                console.log(`[${instanceId}] Connection stable for 2 minutes - clearing recovery flag`);
+                instance.recovering515 = false;
+                instance.recovery515Time = null;
+              }
+            }, 120000);
+          }
           
           // Send presence update to sync with phone
           try {
@@ -592,8 +606,9 @@ class InstanceManager {
             
             // If we were recovering from 515, this is a device conflict
             // Generate new QR automatically so user can try again
-            if (wasRecovering515 && recoveryAge < 60000) {
-              console.log(`[${instanceId}] Device conflict after 515 - generating new QR...`);
+            // Check within 2 minutes (120 seconds) of recovery start
+            if (wasRecovering515 && recoveryAge < 120000) {
+              console.log(`[${instanceId}] Device conflict after 515 (${recoveryAge}ms) - generating new QR...`);
               
               this.notifyWebSocket(instanceId, {
                 type: 'status',
@@ -640,9 +655,20 @@ class InstanceManager {
           instance.qrCode = null;
           instance.phone = phone;
           instance.hadNewLogin = false;
-          instance.recovering515 = false;
-          instance.recovery515Time = null;
           this.reconnecting.delete(instanceId);
+          
+          // DON'T clear recovering515 immediately - keep it for 2 minutes
+          // so that if a 401 comes after connection opens, we still detect it
+          if (instance.recovering515) {
+            console.log(`[${instanceId}] Reconnected during 515 recovery - keeping recovery flag for 2 minutes`);
+            setTimeout(() => {
+              if (instance.status === 'connected') {
+                console.log(`[${instanceId}] Connection stable for 2 minutes - clearing recovery flag`);
+                instance.recovering515 = false;
+                instance.recovery515Time = null;
+              }
+            }, 120000);
+          }
           
           try {
             await socket.sendPresenceUpdate('available');
