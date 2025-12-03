@@ -44,8 +44,9 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
       const response = await baileysApi.listInstances();
       if (response.success && response.data) {
         const serverInstances: Instance[] = response.data.map((inst) => ({
-          id: inst.instanceId,
-          name: inst.name || inst.instanceId,
+          // Server returns 'id' field, not 'instanceId'
+          id: inst.id || inst.instanceId,
+          name: inst.name || inst.id || inst.instanceId,
           phone: inst.phone,
           status: (inst.status as InstanceStatus) || 'disconnected',
           createdAt: new Date(),
@@ -90,6 +91,12 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
   };
 
   const removeInstance = async (id: string) => {
+    // Guard: don't attempt to delete if id is missing
+    if (!id) {
+      console.error('Tentativa de remover instância sem ID');
+      return;
+    }
+    
     const response = await baileysApi.deleteInstance(id);
     
     if (!response.success) {
