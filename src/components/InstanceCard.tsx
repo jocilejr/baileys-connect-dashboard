@@ -566,7 +566,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       </CardHeader>
       
       <CardContent className="space-y-4">
-        {instance.status === 'qr_pending' && (
+        {(instance.status === 'qr_pending' || instance.status === 'connecting' || (usePairingCode && pairingCode)) && (
           <div className="flex flex-col items-center py-4">
             {/* Toggle between QR and Pairing Code */}
             <div className="flex gap-2 mb-4">
@@ -612,6 +612,12 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
                     <p className="text-xs text-muted-foreground">
                       WhatsApp → Dispositivos Conectados → Conectar Dispositivo → Conectar com número de telefone
                     </p>
+                    {instance.status === 'connecting' && (
+                      <div className="flex items-center justify-center gap-2 text-primary mt-2">
+                        <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                        <span className="text-sm">Aguardando pareamento...</span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -645,7 +651,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
           </div>
         )}
 
-        {instance.status === 'connecting' && (
+        {instance.status === 'connecting' && !usePairingCode && !currentQR && (
           <div className="flex flex-col items-center py-8 text-center">
             <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4" />
             <p className="text-sm text-muted-foreground">Conectando ao WhatsApp...</p>
