@@ -3,7 +3,6 @@ const {
   DisconnectReason, 
   useMultiFileAuthState,
   makeInMemoryStore,
-  fetchLatestBaileysVersion,
   Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
@@ -154,25 +153,17 @@ class InstanceManager {
     this.saveInstancesToFile();
 
     try {
-      const { version } = await fetchLatestBaileysVersion();
-      console.log(`Using Baileys version: ${version.join('.')}`);
+      // Don't use fetchLatestBaileysVersion - it can return unstable versions
+      // Let Baileys use its default bundled version which is tested
+      console.log(`[${instanceId}] Creating socket with default Baileys version...`);
       
       const socket = makeWASocket({
-        version,
         logger,
         printQRInTerminal: true,
         auth: state,
-        // Use browser signature that WhatsApp trusts more
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
-        markOnlineOnConnect: false, // Don't mark online immediately
-        fireInitQueries: false, // Don't fire queries immediately
-        connectTimeoutMs: 60000,
-        qrTimeout: 40000, // Shorter QR timeout
-        defaultQueryTimeoutMs: 30000,
-        retryRequestDelayMs: 3000,
-        keepAliveIntervalMs: 30000,
-        emitOwnEvents: true,
+        markOnlineOnConnect: false,
         getMessage: async (key) => {
           const msg = await store.loadMessage(key.remoteJid, key.id);
           return msg?.message || undefined;
@@ -528,25 +519,16 @@ class InstanceManager {
     try {
       const sessionPath = path.join(this.sessionsPath, instanceId);
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-      const { version } = await fetchLatestBaileysVersion();
       
       console.log(`[${instanceId}] Creating new socket with saved credentials...`);
       
       const socket = makeWASocket({
-        version,
         logger,
         printQRInTerminal: true,
         auth: state,
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
         markOnlineOnConnect: false,
-        fireInitQueries: false,
-        connectTimeoutMs: 60000,
-        qrTimeout: 40000,
-        defaultQueryTimeoutMs: 30000,
-        retryRequestDelayMs: 3000,
-        keepAliveIntervalMs: 30000,
-        emitOwnEvents: true,
         getMessage: async (key) => {
           const msg = await instance.store.loadMessage(key.remoteJid, key.id);
           return msg?.message || undefined;
