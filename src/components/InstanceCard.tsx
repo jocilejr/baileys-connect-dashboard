@@ -278,63 +278,55 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
 
   // Track consecutive poll failures
   const pollFailureCountRef = useRef(0);
-  const MAX_POLL_FAILURES = 5;
+  const MAX_POLL_FAILURES = 15;
 
-  // Status polling as fallback for WebSocket failures - polls continuously to sync state
+  // Status polling - ALWAYS trust server response over local state
   const pollInstanceStatus = useCallback(async () => {
     if (!instance.id) return;
     
     try {
       const response = await baileysApi.getInstanceStatus(instance.id);
-      console.log(`[InstanceCard] Status poll para ${instance.id}:`, response);
       
-      // Reset failure count on any response (even error responses from baileys)
-      if (response.success) {
+      if (response.success && response.data) {
         pollFailureCountRef.current = 0;
         
-        if (response.data) {
-          const serverStatus = response.data.status;
-          const phone = response.data.phone || undefined;
-          
-          // Map server status to our status type
-          const mappedStatus: InstanceStatus = 
-            serverStatus === 'connected' || serverStatus === 'open' ? 'connected' :
-            serverStatus === 'connecting' ? 'connecting' :
-            serverStatus === 'qr' || serverStatus === 'qr_pending' ? 'qr_pending' : 'disconnected';
-          
-          // Only update if different from current status
-          if (mappedStatus !== currentStatusRef.current) {
-            console.log(`[InstanceCard] Status mudou via polling: ${currentStatusRef.current} -> ${mappedStatus}`);
-            
-            if (mappedStatus === 'connected') {
-              // Use the same connected logic as WebSocket handler
-              handleStatusChange('connected', phone);
-            } else {
-              updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
-            }
-          }
+        const serverStatus = response.data.status;
+        const phone = response.data.phone || undefined;
+        
+        // Map server status
+        const mappedStatus: InstanceStatus = 
+          serverStatus === 'connected' || serverStatus === 'open' ? 'connected' :
+          serverStatus === 'connecting' ? 'connecting' :
+          serverStatus === 'qr' || serverStatus === 'qr_pending' ? 'qr_pending' : 'disconnected';
+        
+        console.log(`[InstanceCard] Poll: servidor=${serverStatus}, mapeado=${mappedStatus}, local=${currentStatusRef.current}`);
+        
+        // ALWAYS sync with server - trust server as source of truth
+        if (mappedStatus === 'connected' && currentStatusRef.current !== 'connected') {
+          console.log(`[InstanceCard] Servidor conectado, sincronizando frontend`);
+          handleStatusChange('connected', phone);
+        } else if (mappedStatus !== 'connected' && currentStatusRef.current === 'connected') {
+          // Server says NOT connected but frontend thinks it is - FIX IT
+          console.log(`[InstanceCard] Servidor NÃO conectado (${mappedStatus}), corrigindo frontend`);
+          setCurrentQR(undefined);
+          updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
+        } else if (mappedStatus !== currentStatusRef.current) {
+          // Any other status change
+          console.log(`[InstanceCard] Status mudou: ${currentStatusRef.current} -> ${mappedStatus}`);
+          updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
         }
       } else {
-        // Server returned an error (like 500 or connection refused)
         pollFailureCountRef.current++;
-        console.log(`[InstanceCard] Poll failure ${pollFailureCountRef.current}/${MAX_POLL_FAILURES} para ${instance.id}: ${response.error}`);
+        console.log(`[InstanceCard] Poll erro ${pollFailureCountRef.current}/${MAX_POLL_FAILURES}: ${response.error}`);
         
-        // After too many failures, assume server is down
         if (pollFailureCountRef.current >= MAX_POLL_FAILURES && currentStatusRef.current === 'connected') {
-          console.log(`[InstanceCard] Servidor indisponível, marcando como desconectado: ${instance.id}`);
+          console.log(`[InstanceCard] Muitos erros, marcando desconectado`);
           setCurrentQR(undefined);
           updateInstanceStatus(instance.id, 'disconnected');
-          toast({
-            title: 'Servidor indisponível',
-            description: 'Não foi possível verificar o status da conexão.',
-            variant: 'destructive',
-          });
         }
       }
     } catch (error) {
       pollFailureCountRef.current++;
-      console.log(`[InstanceCard] Erro no polling de status (${pollFailureCountRef.current}/${MAX_POLL_FAILURES}):`, error);
-      
       if (pollFailureCountRef.current >= MAX_POLL_FAILURES && currentStatusRef.current === 'connected') {
         setCurrentQR(undefined);
         updateInstanceStatus(instance.id, 'disconnected');
@@ -342,20 +334,18 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     }
   }, [instance.id, handleStatusChange, updateInstanceStatus]);
 
-  // Start status polling when instance needs monitoring (not disconnected)
+  // Start status polling - poll ALL the time for active instances
   useEffect(() => {
-    // Poll when in qr_pending (waiting for scan) OR connected (to detect disconnections)
-    const shouldPollStatus = instance.status === 'qr_pending' || instance.status === 'connected';
+    // Poll for ANY status except 'disconnected'
+    const shouldPoll = instance.status !== 'disconnected';
     
-    if (shouldPollStatus && !statusPollIntervalRef.current) {
-      console.log(`[InstanceCard] Iniciando status polling para ${instance.id} (status: ${instance.status})`);
+    if (shouldPoll && !statusPollIntervalRef.current) {
+      console.log(`[InstanceCard] Iniciando poll contínuo para ${instance.id}`);
       pollFailureCountRef.current = 0;
-      // Poll every 3 seconds
       statusPollIntervalRef.current = setInterval(pollInstanceStatus, 3000);
-      // Also poll immediately
       pollInstanceStatus();
-    } else if (!shouldPollStatus && statusPollIntervalRef.current) {
-      console.log(`[InstanceCard] Parando status polling para ${instance.id}`);
+    } else if (!shouldPoll && statusPollIntervalRef.current) {
+      console.log(`[InstanceCard] Parando poll para ${instance.id}`);
       clearInterval(statusPollIntervalRef.current);
       statusPollIntervalRef.current = null;
     }
