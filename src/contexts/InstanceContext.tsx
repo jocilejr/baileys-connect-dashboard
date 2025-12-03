@@ -43,7 +43,7 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
     console.log('[InstanceContext] Carregando instâncias do servidor...');
     try {
       const response = await baileysApi.listInstances();
-      console.log('[InstanceContext] Resposta do servidor:', response);
+      console.log('[InstanceContext] Resposta do servidor:', JSON.stringify(response));
       
       if (response.success && response.data) {
         // Se o servidor retornar lista vazia, limpar instâncias locais
@@ -55,16 +55,25 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
         
         const serverInstances: Instance[] = response.data.map((inst) => {
           const id = inst.id || inst.instanceId || '';
-          console.log(`[InstanceContext] Processando instância: ${id}, status: ${inst.status}`);
+          // Map server status to frontend status - if not connected on server, show as disconnected
+          let mappedStatus: InstanceStatus = 'disconnected';
+          if (inst.status === 'connected') {
+            mappedStatus = 'connected';
+          } else if (inst.status === 'qr_pending' || inst.status === 'connecting') {
+            mappedStatus = inst.status as InstanceStatus;
+          }
+          
+          console.log(`[InstanceContext] Processando instância: ${id}, status servidor: ${inst.status}, status mapeado: ${mappedStatus}`);
           return {
             id,
             name: inst.name || id,
-            phone: inst.phone,
-            status: (inst.status as InstanceStatus) || 'disconnected',
+            phone: inst.phone || undefined,
+            status: mappedStatus,
             createdAt: new Date(),
             apiKey: generateApiKey(),
           };
         });
+        console.log('[InstanceContext] Instâncias carregadas:', serverInstances.map(i => ({ id: i.id, status: i.status, phone: i.phone })));
         setInstances(serverInstances);
       } else {
         // Erro ou sem dados - limpar estado local
@@ -140,20 +149,26 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
     qrCode?: string, 
     phone?: string
   ) => {
-    setInstances(prev => prev.map(instance => {
-      if (instance.id === id) {
-        // Clear phone when disconnecting or waiting for QR
-        const shouldClearPhone = status === 'disconnected' || status === 'qr_pending' || status === 'connecting';
-        return {
-          ...instance,
-          status,
-          qrCode: qrCode || (shouldClearPhone ? undefined : instance.qrCode),
-          phone: shouldClearPhone ? undefined : (phone || instance.phone),
-          lastSeen: status === 'connected' ? new Date() : instance.lastSeen,
-        };
-      }
-      return instance;
-    }));
+    console.log(`[InstanceContext] Atualizando instância ${id} para status: ${status}`);
+    setInstances(prev => {
+      const updated = prev.map(instance => {
+        if (instance.id === id) {
+          // Clear phone when disconnecting or waiting for QR
+          const shouldClearPhone = status === 'disconnected' || status === 'qr_pending' || status === 'connecting';
+          const newInstance = {
+            ...instance,
+            status,
+            qrCode: qrCode || (shouldClearPhone ? undefined : instance.qrCode),
+            phone: shouldClearPhone ? undefined : (phone || instance.phone),
+            lastSeen: status === 'connected' ? new Date() : instance.lastSeen,
+          };
+          console.log(`[InstanceContext] Instância ${id} atualizada:`, { status: newInstance.status, phone: newInstance.phone });
+          return newInstance;
+        }
+        return instance;
+      });
+      return updated;
+    });
   };
 
   const reconnectInstance = async (id: string) => {
