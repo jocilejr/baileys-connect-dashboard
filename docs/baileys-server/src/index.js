@@ -1,3 +1,9 @@
+// Polyfill for crypto - required by Baileys in Node.js 18+
+const crypto = require('crypto');
+if (!globalThis.crypto) {
+  globalThis.crypto = crypto.webcrypto;
+}
+
 const express = require('express');
 const cors = require('cors');
 const { WebSocketServer } = require('ws');
