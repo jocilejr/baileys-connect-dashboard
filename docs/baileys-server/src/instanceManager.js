@@ -165,18 +165,53 @@ class InstanceManager {
           
           console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}, hadNewLogin: ${instance.hadNewLogin}`);
           
-          // Handle stream errors (515) - This is EXPECTED after scanning QR!
-          // After pairing, WhatsApp closes the connection and expects us to reconnect
-          // IMPORTANT: We need to wait for the PHONE to complete its side of pairing
+          // Handle stream errors (515) - This can happen after scanning QR
+          // IMPORTANT: If this is a NEW LOGIN (QR just scanned), the credentials might be INCOMPLETE
+          // WhatsApp sends 515 before pairing fully completes, so saved creds are often invalid
           if (statusCode === 515) {
-            console.log(`[${instanceId}] Stream error 515 - this is expected after pairing`);
+            console.log(`[${instanceId}] Stream error 515, hadNewLogin: ${instance.hadNewLogin}`);
             
-            // CRITICAL: Wait MUCH longer for:
-            // 1. Credentials to be fully saved
-            // 2. Phone to complete its side of the pairing
-            // 3. WhatsApp servers to propagate the device link
-            console.log(`[${instanceId}] Waiting 15 seconds for phone to complete pairing...`);
-            await new Promise(resolve => setTimeout(resolve, 15000));
+            // If this was a NEW login attempt, the credentials are likely incomplete
+            // WhatsApp will reject them later with 401 device_removed
+            // Solution: Delete incomplete session and generate new QR
+            if (instance.hadNewLogin) {
+              console.log(`[${instanceId}] 515 after new login - credentials are incomplete, need new QR`);
+              
+              // Delete incomplete session files
+              const sessionPath = path.join(this.sessionsPath, instanceId);
+              if (fs.existsSync(sessionPath)) {
+                console.log(`[${instanceId}] Deleting incomplete session files...`);
+                fs.rmSync(sessionPath, { recursive: true });
+              }
+              
+              // Reset instance state
+              instance.hadNewLogin = false;
+              instance.qrCode = null;
+              instance.phone = null;
+              
+              // Remove old socket listeners
+              try {
+                socket.ev.removeAllListeners();
+              } catch (e) {
+                console.log(`[${instanceId}] Error removing listeners:`, e.message);
+              }
+              
+              // Wait a moment before generating new QR
+              console.log(`[${instanceId}] Waiting 3 seconds before generating new QR...`);
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              // Notify frontend to show QR pending state
+              instance.status = 'qr_pending';
+              this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
+              
+              // Create fresh socket with new QR
+              console.log(`[${instanceId}] Creating fresh socket for new QR...`);
+              this.createInstance(instanceId, instance.name, instance.webhookUrl);
+              return;
+            }
+            
+            // If NOT a new login, we can try to reconnect with existing credentials
+            console.log(`[${instanceId}] 515 on existing session - reconnecting with saved credentials...`);
             
             // Check if session files exist
             const sessionPath = path.join(this.sessionsPath, instanceId);
@@ -186,24 +221,22 @@ class InstanceManager {
               const credsSize = fs.statSync(credsPath).size;
               console.log(`[${instanceId}] Credentials file found (${credsSize} bytes), proceeding with reconnection`);
             } else {
-              console.log(`[${instanceId}] WARNING: Credentials file NOT found at ${credsPath}`);
-              console.log(`[${instanceId}] Session files in folder:`, fs.existsSync(sessionPath) ? fs.readdirSync(sessionPath) : 'folder does not exist');
-              // Without credentials, we cannot reconnect - need new QR
-              instance.status = 'disconnected';
-              this.notifyWebSocket(instanceId, { type: 'status', status: 'disconnected' });
+              console.log(`[${instanceId}] No credentials found, generating new QR...`);
+              instance.status = 'qr_pending';
+              this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
+              this.createInstance(instanceId, instance.name, instance.webhookUrl);
               return;
             }
             
-            // Remove listeners but don't force close
+            // Remove listeners
             try {
               socket.ev.removeAllListeners();
             } catch (e) {
               console.log(`[${instanceId}] Error removing listeners:`, e.message);
             }
             
-            // Additional wait before reconnecting
-            console.log(`[${instanceId}] Waiting 5 more seconds before reconnecting...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            // Wait before reconnecting
+            await new Promise(resolve => setTimeout(resolve, 2000));
             
             // Reconnect using saved credentials
             console.log(`[${instanceId}] Reconnecting after 515...`);
