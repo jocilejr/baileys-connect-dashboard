@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
 import { cn } from '@/lib/utils';
 import { RefreshCw, Smartphone } from 'lucide-react';
 import { Button } from './ui/button';
@@ -31,18 +30,25 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
     return () => clearInterval(timer);
   }, [onRefresh]);
 
+  // Check if qrCode is a data URL (already an image)
+  const isDataUrl = qrCode.startsWith('data:');
+
   return (
     <div className={cn('flex flex-col items-center gap-4', className)}>
       <div className="relative p-4 bg-card rounded-2xl border border-border shadow-lg">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent rounded-2xl" />
-        <div className="relative bg-card p-4 rounded-xl">
-          <QRCodeSVG
-            value={qrCode}
-            size={200}
-            level="M"
-            includeMargin={false}
-            className="rounded-lg"
-          />
+        <div className="relative bg-white p-4 rounded-xl">
+          {isDataUrl ? (
+            <img 
+              src={qrCode} 
+              alt="QR Code WhatsApp" 
+              className="w-[200px] h-[200px] rounded-lg"
+            />
+          ) : (
+            <div className="w-[200px] h-[200px] flex items-center justify-center text-muted-foreground text-sm">
+              QR Code inválido
+            </div>
+          )}
         </div>
         <div className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs font-bold px-2 py-1 rounded-full">
           {countdown}s
