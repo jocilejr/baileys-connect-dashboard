@@ -48,7 +48,13 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const isReconnectingRef = useRef(false); // Track if we're in reconnection grace period
   const reconnectAttemptRef = useRef(0); // Count 404 errors during reconnection
   const autoReconnectCountRef = useRef(0); // Limit auto-reconnects when QR expires
+  const currentStatusRef = useRef(instance.status); // Track current status for callbacks
   const MAX_AUTO_RECONNECTS = 3;
+
+  // Keep status ref in sync
+  useEffect(() => {
+    currentStatusRef.current = instance.status;
+  }, [instance.status]);
 
   // HTTP polling for QR code as fallback
   const pollForQRCode = useCallback(async () => {
@@ -145,7 +151,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   }, [instance.id, updateInstanceStatus]);
 
   const handleStatusChange = useCallback((status: string, phone?: string) => {
-    console.log(`[InstanceCard] Status alterado para ${instance.id}: ${status}`);
+    console.log(`[InstanceCard] Status alterado para ${instance.id}: ${status}, status atual: ${currentStatusRef.current}`);
     const mappedStatus: InstanceStatus = 
       status === 'open' || status === 'connected' ? 'connected' :
       status === 'connecting' ? 'connecting' :
@@ -164,7 +170,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     }
     
     // If QR expired (disconnected while in qr_pending), auto-reconnect with limit
-    if (mappedStatus === 'disconnected' && instance.status === 'qr_pending') {
+    // Use ref to get current status instead of stale prop value
+    if (mappedStatus === 'disconnected' && currentStatusRef.current === 'qr_pending') {
       if (autoReconnectCountRef.current < MAX_AUTO_RECONNECTS) {
         autoReconnectCountRef.current += 1;
         console.log(`[InstanceCard] QR expirou para ${instance.id}, auto-reconectando... (tentativa ${autoReconnectCountRef.current}/${MAX_AUTO_RECONNECTS})`);
@@ -186,7 +193,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     }
     
     updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
-  }, [instance.id, instance.status, updateInstanceStatus, reconnectInstance]);
+  }, [instance.id, updateInstanceStatus, reconnectInstance]);
 
   const handleError = useCallback((error: string) => {
     console.error(`[InstanceCard] Erro para ${instance.id}: ${error}`);
