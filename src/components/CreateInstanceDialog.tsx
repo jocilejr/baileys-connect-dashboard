@@ -40,20 +40,19 @@ export const CreateInstanceDialog: React.FC<CreateInstanceDialogProps> = ({
 
     setIsLoading(true);
 
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    const instance = await addInstance(name.trim(), webhookUrl.trim() || undefined);
 
-    const instance = addInstance(name.trim());
+    if (instance) {
+      toast({
+        title: 'Instância criada!',
+        description: `"${name}" foi criada. Escaneie o QR Code para conectar.`,
+      });
+      setName('');
+      setWebhookUrl('');
+      onOpenChange(false);
+    }
 
-    toast({
-      title: 'Instância criada!',
-      description: `"${name}" foi criada. Escaneie o QR Code para conectar.`,
-    });
-
-    setName('');
-    setWebhookUrl('');
     setIsLoading(false);
-    onOpenChange(false);
   };
 
   return (

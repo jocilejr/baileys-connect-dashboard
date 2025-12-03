@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Instance } from '@/types/instance';
+import React, { useState, useCallback } from 'react';
+import { Instance, InstanceStatus } from '@/types/instance';
 import { StatusBadge } from './StatusBadge';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { Button } from './ui/button';
@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { useInstances } from '@/contexts/InstanceContext';
+import { useBaileysWebSocket } from '@/hooks/useBaileysWebSocket';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -37,8 +38,52 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   onSendMessage,
   onViewDetails 
 }) => {
-  const { removeInstance, updateInstanceStatus } = useInstances();
+  const { removeInstance, updateInstanceStatus, reconnectInstance } = useInstances();
   const [copied, setCopied] = useState(false);
+  const [currentQR, setCurrentQR] = useState<string | undefined>(instance.qrCode);
+
+  // WebSocket handlers
+  const handleQRCode = useCallback((qr: string) => {
+    console.log(`[InstanceCard] QR Code recebido para ${instance.id}`);
+    setCurrentQR(qr);
+    updateInstanceStatus(instance.id, 'qr_pending', qr);
+  }, [instance.id, updateInstanceStatus]);
+
+  const handleStatusChange = useCallback((status: string, phone?: string) => {
+    console.log(`[InstanceCard] Status alterado para ${instance.id}: ${status}`);
+    const mappedStatus: InstanceStatus = 
+      status === 'open' || status === 'connected' ? 'connected' :
+      status === 'connecting' ? 'connecting' :
+      status === 'qr' ? 'qr_pending' : 'disconnected';
+    
+    updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
+    
+    if (mappedStatus === 'connected') {
+      toast({
+        title: 'Conectado!',
+        description: `WhatsApp conectado com sucesso.`,
+      });
+    }
+  }, [instance.id, updateInstanceStatus]);
+
+  const handleError = useCallback((error: string) => {
+    console.error(`[InstanceCard] Erro para ${instance.id}: ${error}`);
+    toast({
+      title: 'Erro na conexão',
+      description: error,
+      variant: 'destructive',
+    });
+  }, [instance.id]);
+
+  // Connect WebSocket for QR pending or connecting states
+  const shouldConnect = instance.status === 'qr_pending' || instance.status === 'connecting';
+  
+  useBaileysWebSocket({
+    instanceId: shouldConnect ? instance.id : null,
+    onQRCode: handleQRCode,
+    onStatusChange: handleStatusChange,
+    onError: handleError,
+  });
 
   const handleCopyApiKey = () => {
     navigator.clipboard.writeText(instance.apiKey);
@@ -50,8 +95,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleConnect = () => {
-    updateInstanceStatus(instance.id, 'qr_pending', `2@${Date.now()}`);
+  const handleConnect = async () => {
+    await reconnectInstance(instance.id);
     toast({
       title: 'Gerando QR Code...',
       description: 'Escaneie o código com seu WhatsApp.',
@@ -67,8 +112,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     });
   };
 
-  const handleDelete = () => {
-    removeInstance(instance.id);
+  const handleDelete = async () => {
+    await removeInstance(instance.id);
     toast({
       title: 'Instância removida',
       description: `A instância "${instance.name}" foi removida.`,
@@ -76,20 +121,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     });
   };
 
-  const handleRefreshQR = () => {
-    updateInstanceStatus(instance.id, 'qr_pending', `2@${Date.now()}`);
-  };
-
-  // Simulate connection after QR scan (demo purposes)
-  const simulateConnection = () => {
-    updateInstanceStatus(instance.id, 'connecting');
-    setTimeout(() => {
-      updateInstanceStatus(instance.id, 'connected', undefined, '+55 11 98765-4321');
-      toast({
-        title: 'Conectado!',
-        description: 'WhatsApp conectado com sucesso.',
-      });
-    }, 2000);
+  const handleRefreshQR = async () => {
+    await reconnectInstance(instance.id);
   };
 
   return (
@@ -150,20 +183,12 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       </CardHeader>
       
       <CardContent className="space-y-4">
-        {instance.status === 'qr_pending' && instance.qrCode && (
+        {instance.status === 'qr_pending' && (currentQR || instance.qrCode) && (
           <div className="flex flex-col items-center py-4">
             <QRCodeDisplay 
-              qrCode={instance.qrCode} 
+              qrCode={currentQR || instance.qrCode || ''} 
               onRefresh={handleRefreshQR}
             />
-            <Button 
-              variant="success" 
-              size="sm" 
-              className="mt-4"
-              onClick={simulateConnection}
-            >
-              Simular Conexão (Demo)
-            </Button>
           </div>
         )}
 

@@ -21,6 +21,7 @@ import {
 } from './ui/select';
 import { Send, Loader2 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+import { baileysApi } from '@/services/baileysApi';
 
 interface SendMessageDialogProps {
   instance: Instance | null;
@@ -35,7 +36,8 @@ export const SendMessageDialog: React.FC<SendMessageDialogProps> = ({
 }) => {
   const [phone, setPhone] = useState('');
   const [message, setMessage] = useState('');
-  const [messageType, setMessageType] = useState('text');
+  const [messageType, setMessageType] = useState<'text' | 'image' | 'document' | 'audio'>('text');
+  const [mediaUrl, setMediaUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSend = async () => {
@@ -48,20 +50,56 @@ export const SendMessageDialog: React.FC<SendMessageDialogProps> = ({
       return;
     }
 
+    if (!instance) {
+      toast({
+        title: 'Erro',
+        description: 'Nenhuma instância selecionada.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Format phone number - remove non-digits
+    const formattedPhone = phone.replace(/\D/g, '');
+    
+    if (formattedPhone.length < 10) {
+      toast({
+        title: 'Número inválido',
+        description: 'Digite um número de telefone válido.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setIsLoading(true);
 
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    const response = await baileysApi.sendMessage(
+      instance.id,
+      formattedPhone,
+      message,
+      messageType,
+      messageType !== 'text' ? mediaUrl : undefined
+    );
 
-    toast({
-      title: 'Mensagem enviada!',
-      description: `Mensagem enviada para ${phone}`,
-    });
+    if (response.success) {
+      toast({
+        title: 'Mensagem enviada!',
+        description: `Mensagem enviada para ${phone}`,
+      });
+      setPhone('');
+      setMessage('');
+      setMediaUrl('');
+      setMessageType('text');
+      onOpenChange(false);
+    } else {
+      toast({
+        title: 'Erro ao enviar',
+        description: response.error || 'Não foi possível enviar a mensagem.',
+        variant: 'destructive',
+      });
+    }
 
-    setPhone('');
-    setMessage('');
     setIsLoading(false);
-    onOpenChange(false);
   };
 
   const formatPhone = (value: string) => {
@@ -78,7 +116,7 @@ export const SendMessageDialog: React.FC<SendMessageDialogProps> = ({
         <DialogHeader>
           <DialogTitle>Enviar Mensagem</DialogTitle>
           <DialogDescription>
-            {instance?.name} • {instance?.phone}
+            {instance?.name} • {instance?.phone || 'Sem número'}
           </DialogDescription>
         </DialogHeader>
 
@@ -95,7 +133,7 @@ export const SendMessageDialog: React.FC<SendMessageDialogProps> = ({
 
           <div className="space-y-2">
             <Label htmlFor="type">Tipo de mensagem</Label>
-            <Select value={messageType} onValueChange={setMessageType}>
+            <Select value={messageType} onValueChange={(v) => setMessageType(v as typeof messageType)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -108,8 +146,22 @@ export const SendMessageDialog: React.FC<SendMessageDialogProps> = ({
             </Select>
           </div>
 
+          {messageType !== 'text' && (
+            <div className="space-y-2">
+              <Label htmlFor="mediaUrl">URL da mídia</Label>
+              <Input
+                id="mediaUrl"
+                placeholder="https://exemplo.com/arquivo.jpg"
+                value={mediaUrl}
+                onChange={(e) => setMediaUrl(e.target.value)}
+              />
+            </div>
+          )}
+
           <div className="space-y-2">
-            <Label htmlFor="message">Mensagem</Label>
+            <Label htmlFor="message">
+              {messageType === 'text' ? 'Mensagem' : 'Legenda (opcional)'}
+            </Label>
             <Textarea
               id="message"
               placeholder="Digite sua mensagem..."

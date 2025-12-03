@@ -1,12 +1,17 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { Instance, InstanceStatus } from '@/types/instance';
+import { baileysApi } from '@/services/baileysApi';
+import { toast } from '@/hooks/use-toast';
 
 interface InstanceContextType {
   instances: Instance[];
-  addInstance: (name: string) => Instance;
-  removeInstance: (id: string) => void;
+  isLoading: boolean;
+  addInstance: (name: string, webhookUrl?: string) => Promise<Instance | null>;
+  removeInstance: (id: string) => Promise<void>;
   updateInstanceStatus: (id: string, status: InstanceStatus, qrCode?: string, phone?: string) => void;
   getInstanceById: (id: string) => Instance | undefined;
+  reconnectInstance: (id: string) => Promise<void>;
+  refreshInstances: () => Promise<void>;
 }
 
 const InstanceContext = createContext<InstanceContextType | undefined>(undefined);
@@ -25,56 +30,77 @@ const generateApiKey = () => {
   ).join('');
 };
 
-const generateQRCode = () => {
-  // Simulated QR code data - in real implementation this comes from Baileys
-  return `2@${Date.now()}${Math.random().toString(36).substring(7)}`;
-};
-
 interface InstanceProviderProps {
   children: ReactNode;
 }
 
 export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) => {
-  const [instances, setInstances] = useState<Instance[]>([
-    {
-      id: '1',
-      name: 'Instância Principal',
-      phone: '+55 11 99999-9999',
-      status: 'connected',
-      createdAt: new Date(Date.now() - 86400000 * 7),
-      lastSeen: new Date(),
-      apiKey: generateApiKey(),
-    },
-    {
-      id: '2',
-      name: 'Suporte',
-      status: 'disconnected',
-      createdAt: new Date(Date.now() - 86400000 * 3),
-      apiKey: generateApiKey(),
-    },
-  ]);
+  const [instances, setInstances] = useState<Instance[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const addInstance = (name: string): Instance => {
+  // Load instances from server on mount
+  const refreshInstances = useCallback(async () => {
+    try {
+      const response = await baileysApi.listInstances();
+      if (response.success && response.data) {
+        const serverInstances: Instance[] = response.data.map((inst) => ({
+          id: inst.instanceId,
+          name: inst.name || inst.instanceId,
+          phone: inst.phone,
+          status: (inst.status as InstanceStatus) || 'disconnected',
+          createdAt: new Date(),
+          apiKey: generateApiKey(),
+        }));
+        setInstances(serverInstances);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar instâncias:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshInstances();
+  }, [refreshInstances]);
+
+  const addInstance = async (name: string, webhookUrl?: string): Promise<Instance | null> => {
+    const response = await baileysApi.createInstance(name, webhookUrl);
+    
+    if (!response.success || !response.data) {
+      toast({
+        title: 'Erro ao criar instância',
+        description: response.error || 'Erro desconhecido',
+        variant: 'destructive',
+      });
+      return null;
+    }
+
     const newInstance: Instance = {
-      id: Date.now().toString(),
-      name,
+      id: response.data.instanceId,
+      name: response.data.name || name,
       status: 'qr_pending',
-      qrCode: generateQRCode(),
       createdAt: new Date(),
       apiKey: generateApiKey(),
+      webhookUrl,
     };
     
     setInstances(prev => [...prev, newInstance]);
-    
-    // Simulate QR code generation delay
-    setTimeout(() => {
-      updateInstanceStatus(newInstance.id, 'qr_pending', generateQRCode());
-    }, 500);
-    
     return newInstance;
   };
 
-  const removeInstance = (id: string) => {
+  const removeInstance = async (id: string) => {
+    const response = await baileysApi.deleteInstance(id);
+    
+    if (!response.success) {
+      toast({
+        title: 'Erro ao remover instância',
+        description: response.error || 'Erro desconhecido',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setInstances(prev => prev.filter(instance => instance.id !== id));
   };
 
@@ -98,6 +124,21 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
     }));
   };
 
+  const reconnectInstance = async (id: string) => {
+    updateInstanceStatus(id, 'qr_pending');
+    
+    const response = await baileysApi.reconnectInstance(id);
+    
+    if (!response.success) {
+      toast({
+        title: 'Erro ao reconectar',
+        description: response.error || 'Erro desconhecido',
+        variant: 'destructive',
+      });
+      updateInstanceStatus(id, 'disconnected');
+    }
+  };
+
   const getInstanceById = (id: string) => {
     return instances.find(instance => instance.id === id);
   };
@@ -105,10 +146,13 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
   return (
     <InstanceContext.Provider value={{
       instances,
+      isLoading,
       addInstance,
       removeInstance,
       updateInstanceStatus,
       getInstanceById,
+      reconnectInstance,
+      refreshInstances,
     }}>
       {children}
     </InstanceContext.Provider>
