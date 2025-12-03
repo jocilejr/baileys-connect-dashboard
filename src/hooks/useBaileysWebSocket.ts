@@ -25,6 +25,7 @@ interface UseBaileysWebSocketProps {
 }
 
 const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY = 5000;
 
 export const useBaileysWebSocket = ({
   instanceId,
@@ -39,17 +40,33 @@ export const useBaileysWebSocket = ({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
   const reconnectAttemptsRef = useRef(0);
   const isManualDisconnectRef = useRef(false);
+  const isConnectingRef = useRef(false);
+  const lastInstanceIdRef = useRef<string | null>(null);
 
   const connect = useCallback(() => {
     if (!instanceId || !enabled) return;
+    
+    // Prevent multiple simultaneous connection attempts
+    if (isConnectingRef.current && lastInstanceIdRef.current === instanceId) {
+      console.log(`[WebSocket] Já conectando para instância: ${instanceId}, ignorando`);
+      return;
+    }
 
-    // Close existing connection
-    if (wsRef.current) {
+    // If already connected to the same instance, don't reconnect
+    if (wsRef.current?.readyState === WebSocket.OPEN && lastInstanceIdRef.current === instanceId) {
+      console.log(`[WebSocket] Já conectado para instância: ${instanceId}`);
+      return;
+    }
+
+    // Close existing connection if connecting to different instance
+    if (wsRef.current && lastInstanceIdRef.current !== instanceId) {
       wsRef.current.close();
     }
 
-    // Reset manual disconnect flag
+    // Reset flags
     isManualDisconnectRef.current = false;
+    isConnectingRef.current = true;
+    lastInstanceIdRef.current = instanceId;
 
     console.log(`[WebSocket] Conectando para instância: ${instanceId}`);
     
@@ -59,6 +76,7 @@ export const useBaileysWebSocket = ({
       ws.onopen = () => {
         console.log(`[WebSocket] Conectado para instância: ${instanceId}`);
         setIsConnected(true);
+        isConnectingRef.current = false;
         reconnectAttemptsRef.current = 0;
       };
 
@@ -102,45 +120,35 @@ export const useBaileysWebSocket = ({
 
       ws.onerror = (error) => {
         console.error('[WebSocket] Erro:', error);
+        isConnectingRef.current = false;
       };
 
       ws.onclose = () => {
         console.log(`[WebSocket] Desconectado da instância: ${instanceId}`);
         setIsConnected(false);
+        isConnectingRef.current = false;
 
-        // Don't reconnect if manually disconnected or max attempts reached
+        // Don't reconnect if manually disconnected
         if (isManualDisconnectRef.current) {
           console.log('[WebSocket] Desconexão manual, não reconectando');
           return;
         }
 
-        if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-          console.log('[WebSocket] Máximo de tentativas atingido, parando reconexão');
-          onError?.('Não foi possível conectar ao WebSocket. O servidor pode estar indisponível.');
-          return;
-        }
-
-        // Auto-reconnect with exponential backoff
-        const delay = Math.min(3000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-        reconnectAttemptsRef.current++;
-        
-        console.log(`[WebSocket] Tentando reconectar em ${delay}ms (tentativa ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
-        
-        reconnectTimeoutRef.current = setTimeout(() => {
-          if (instanceId && enabled && !isManualDisconnectRef.current) {
-            connect();
-          }
-        }, delay);
+        // Don't auto-reconnect - let the user trigger reconnection manually
+        // This prevents the infinite reconnection loop
+        console.log('[WebSocket] Conexão fechada. Use o botão Conectar para reconectar.');
       };
 
       wsRef.current = ws;
     } catch (error) {
       console.error('[WebSocket] Erro ao criar conexão:', error);
+      isConnectingRef.current = false;
     }
   }, [instanceId, enabled, onQRCode, onStatusChange, onMessage, onError]);
 
   const disconnect = useCallback(() => {
     isManualDisconnectRef.current = true;
+    isConnectingRef.current = false;
     
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -153,15 +161,35 @@ export const useBaileysWebSocket = ({
     reconnectAttemptsRef.current = 0;
   }, []);
 
+  // Use refs for stable effect
+  const enabledRef = useRef(enabled);
+  const instanceIdRef = useRef(instanceId);
+  
   useEffect(() => {
+    enabledRef.current = enabled;
+    instanceIdRef.current = instanceId;
+  }, [enabled, instanceId]);
+
+  useEffect(() => {
+    // Only connect if enabled and instanceId exists
     if (instanceId && enabled) {
-      connect();
+      // Small delay to prevent rapid reconnections during re-renders
+      const connectTimeout = setTimeout(() => {
+        if (enabledRef.current && instanceIdRef.current === instanceId) {
+          connect();
+        }
+      }, 100);
+      
+      return () => {
+        clearTimeout(connectTimeout);
+      };
     } else {
       disconnect();
     }
 
     return () => {
-      disconnect();
+      // Don't disconnect on cleanup if we're still supposed to be connected
+      // This prevents disconnect during re-renders
     };
   }, [instanceId, enabled]);
 
