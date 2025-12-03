@@ -102,4 +102,5 @@ export const baileysApi = {
   },
 };
 
-export const BAILEYS_WS_URL = 'ws://72.60.249.69:3001/ws';
+// WebSocket proxy URL (WSS through Supabase Edge Function)
+export const BAILEYS_WS_URL = 'wss://ysvnadhzkidrshqgvgni.supabase.co/functions/v1/baileys-ws-proxy';
