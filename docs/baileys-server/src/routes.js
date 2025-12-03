@@ -24,7 +24,7 @@ router.post('/instance/create', async (req, res) => {
   res.json(result);
 });
 
-// Get instance status
+// Get instance status - includes QR code when available for polling fallback
 router.get('/instance/:instanceId/status', (req, res) => {
   const { instanceId } = req.params;
   const instanceManager = getInstanceManager(req);
@@ -40,7 +40,8 @@ router.get('/instance/:instanceId/status', (req, res) => {
     status: instance.status,
     phone: instance.phone,
     webhookUrl: instance.webhookUrl,
-    createdAt: instance.createdAt
+    createdAt: instance.createdAt,
+    qrCode: instance.qrCode || null
   });
 });
 
