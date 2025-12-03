@@ -247,23 +247,8 @@ class InstanceManager {
               return;
             }
             
-            // If NOT a new login, we can try to reconnect with existing credentials
-            console.log(`[${instanceId}] 515 on existing session - reconnecting with saved credentials...`);
-            
-            // Check if session files exist
-            const sessionPath = path.join(this.sessionsPath, instanceId);
-            const credsPath = path.join(sessionPath, 'creds.json');
-            
-            if (fs.existsSync(credsPath)) {
-              const credsSize = fs.statSync(credsPath).size;
-              console.log(`[${instanceId}] Credentials file found (${credsSize} bytes), proceeding with reconnection`);
-            } else {
-              console.log(`[${instanceId}] No credentials found, generating new QR...`);
-              instance.status = 'qr_pending';
-              this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
-              this.createInstance(instanceId, instance.name, instance.webhookUrl);
-              return;
-            }
+            // If NOT a new login and no valid credentials, try to reconnect anyway
+            console.log(`[${instanceId}] 515 on existing session - attempting reconnect...`);
             
             // Remove listeners
             try {
