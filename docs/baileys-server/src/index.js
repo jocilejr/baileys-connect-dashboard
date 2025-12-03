@@ -19,25 +19,47 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 app.use(cors());
 app.use(express.json());
 
-// Store WebSocket connections by instance ID
-const wsConnections = new Map();
-
 wss.on('connection', (ws, req) => {
   const instanceId = new URL(req.url, 'http://localhost').searchParams.get('instanceId');
   
   if (instanceId) {
-    wsConnections.set(instanceId, ws);
+    // Register WebSocket client in instanceManager so notifications work
+    instanceManager.registerWebSocket(instanceId, ws);
     console.log(`WebSocket connected for instance: ${instanceId}`);
     
+    // Send current QR code if available
+    const qrCode = instanceManager.getQRCode(instanceId);
+    if (qrCode) {
+      console.log(`[${instanceId}] Sending existing QR code to new WebSocket client`);
+      ws.send(JSON.stringify({ type: 'qr', qrCode }));
+    }
+    
+    // Send current status
+    const instance = instanceManager.getInstance(instanceId);
+    if (instance) {
+      console.log(`[${instanceId}] Sending current status to new WebSocket client: ${instance.status}`);
+      ws.send(JSON.stringify({ 
+        type: 'status', 
+        status: instance.status,
+        phone: instance.phone 
+      }));
+    }
+    
     ws.on('close', () => {
-      wsConnections.delete(instanceId);
+      instanceManager.unregisterWebSocket(instanceId, ws);
       console.log(`WebSocket disconnected for instance: ${instanceId}`);
     });
+    
+    ws.on('error', (error) => {
+      console.log(`WebSocket error for instance ${instanceId}:`, error.message);
+    });
+  } else {
+    console.log('WebSocket connection without instanceId, closing...');
+    ws.close();
   }
 });
 
-// Make wsConnections available to routes
-app.set('wsConnections', wsConnections);
+// Make instanceManager available to routes
 app.set('instanceManager', instanceManager);
 
 // Routes
