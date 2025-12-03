@@ -11,9 +11,6 @@ const QRCode = require('qrcode');
 
 const logger = pino({ level: 'silent' });
 
-// STABLE VERSION - DO NOT USE fetchLatestBaileysVersion() as it causes QR code issues
-const STABLE_VERSION = [2, 3000, 1015901307];
-
 class InstanceManager {
   constructor() {
     this.instances = new Map();
@@ -147,14 +144,13 @@ class InstanceManager {
     this.saveInstancesToFile();
 
     try {
-      console.log(`[${instanceId}] Using stable Baileys version: ${STABLE_VERSION.join('.')}`);
+      console.log(`[${instanceId}] Creating Baileys socket (default version)`);
 
       const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome'),
-        version: STABLE_VERSION
+        browser: Browsers.ubuntu('Chrome')
       });
 
       instance.socket = socket;
@@ -299,14 +295,13 @@ class InstanceManager {
     try {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
       
-      console.log(`[${instanceId}] Reconnect using stable Baileys version: ${STABLE_VERSION.join('.')}`);
+      console.log(`[${instanceId}] Reconnecting Baileys socket (default version)`);
 
       const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome'),
-        version: STABLE_VERSION
+        browser: Browsers.ubuntu('Chrome')
       });
 
       instance.socket = socket;
