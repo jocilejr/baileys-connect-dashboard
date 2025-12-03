@@ -169,20 +169,22 @@ class InstanceManager {
           if (statusCode === 515) {
             console.log(`[${instanceId}] Stream error 515 - this is expected after pairing, reconnecting...`);
             
-            // Wait for credentials to be fully saved before cleanup
-            console.log(`[${instanceId}] Waiting 3 seconds for credentials to save...`);
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            // CRITICAL: Wait for credentials to be fully saved before ANY cleanup
+            // The saveCreds callback may still be running
+            console.log(`[${instanceId}] Waiting 5 seconds for all credentials to save...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
             
-            // Clean up current socket
+            // Only remove listeners, don't force close the socket
+            // Let it close naturally to avoid interrupting credential saves
             try {
               socket.ev.removeAllListeners();
-              socket.ws?.close();
             } catch (e) {
-              console.log(`[${instanceId}] Error during 515 cleanup:`, e.message);
+              console.log(`[${instanceId}] Error removing listeners:`, e.message);
             }
             
-            // Wait a bit more then reconnect (WITHOUT deleting session - credentials are saved!)
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // Wait more before reconnecting
+            console.log(`[${instanceId}] Waiting 3 more seconds before reconnecting...`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
             
             // Reconnect using saved credentials
             console.log(`[${instanceId}] Reconnecting after 515 with saved credentials...`);
