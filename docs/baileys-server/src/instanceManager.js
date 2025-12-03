@@ -2,8 +2,7 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { 
   DisconnectReason, 
   useMultiFileAuthState,
-  Browsers,
-  fetchLatestBaileysVersion
+  Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
@@ -11,6 +10,9 @@ const fs = require('fs');
 const QRCode = require('qrcode');
 
 const logger = pino({ level: 'silent' });
+
+// STABLE VERSION - DO NOT USE fetchLatestBaileysVersion() as it causes QR code issues
+const STABLE_VERSION = [2, 3000, 1015901307];
 
 class InstanceManager {
   constructor() {
@@ -145,28 +147,15 @@ class InstanceManager {
     this.saveInstancesToFile();
 
     try {
-      // Fetch latest version for WhatsApp compatibility
-      let version;
-      try {
-        const versionInfo = await fetchLatestBaileysVersion();
-        version = versionInfo.version;
-        console.log(`[${instanceId}] Using Baileys version: ${version.join('.')}`);
-      } catch (e) {
-        console.log(`[${instanceId}] Could not fetch version, using default`);
-      }
+      console.log(`[${instanceId}] Using stable Baileys version: ${STABLE_VERSION.join('.')}`);
 
-      const socketOptions = {
+      const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome')
-      };
-
-      if (version) {
-        socketOptions.version = version;
-      }
-
-      const socket = makeWASocket(socketOptions);
+        browser: Browsers.ubuntu('Chrome'),
+        version: STABLE_VERSION
+      });
 
       instance.socket = socket;
 
@@ -310,28 +299,15 @@ class InstanceManager {
     try {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
       
-      // Fetch latest version for WhatsApp compatibility
-      let version;
-      try {
-        const versionInfo = await fetchLatestBaileysVersion();
-        version = versionInfo.version;
-        console.log(`[${instanceId}] Reconnect using Baileys version: ${version.join('.')}`);
-      } catch (e) {
-        console.log(`[${instanceId}] Could not fetch version for reconnect`);
-      }
+      console.log(`[${instanceId}] Reconnect using stable Baileys version: ${STABLE_VERSION.join('.')}`);
 
-      const socketOptions = {
+      const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome')
-      };
-
-      if (version) {
-        socketOptions.version = version;
-      }
-
-      const socket = makeWASocket(socketOptions);
+        browser: Browsers.ubuntu('Chrome'),
+        version: STABLE_VERSION
+      });
 
       instance.socket = socket;
       instance.status = 'connecting';
