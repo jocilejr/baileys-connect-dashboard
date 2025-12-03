@@ -47,9 +47,15 @@ const proxyRequest = async <T>(path: string, options?: RequestInit): Promise<Api
       return { success: false, error: data.error || data.message || 'Request failed' };
     }
 
-    // Handle both wrapped and unwrapped responses from Baileys server
-    if (data.success !== undefined) {
+    // If response already has success and data fields, return as-is
+    if (data.success !== undefined && data.data !== undefined) {
       return data;
+    }
+    
+    // If response has success but no data wrapper, extract data
+    if (data.success !== undefined) {
+      const { success, error, ...rest } = data;
+      return { success, data: rest as T, error };
     }
     
     // Wrap raw response data
