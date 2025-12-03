@@ -75,11 +75,12 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     });
   }, [instance.id]);
 
-  // Connect WebSocket for QR pending or connecting states
+  // Connect WebSocket only for QR pending or connecting states
   const shouldConnect = instance.status === 'qr_pending' || instance.status === 'connecting';
   
   useBaileysWebSocket({
-    instanceId: shouldConnect ? instance.id : null,
+    instanceId: instance.id,
+    enabled: shouldConnect,
     onQRCode: handleQRCode,
     onStatusChange: handleStatusChange,
     onError: handleError,
