@@ -292,6 +292,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         
         const serverStatus = response.data.status;
         const phone = response.data.phone || undefined;
+        const serverQRCode = (response.data as any).qrCode || null;
         
         // Map server status
         const mappedStatus: InstanceStatus = 
@@ -299,29 +300,21 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
           serverStatus === 'connecting' ? 'connecting' :
           serverStatus === 'qr' || serverStatus === 'qr_pending' ? 'qr_pending' : 'disconnected';
         
-        console.log(`[InstanceCard] Poll: servidor=${serverStatus}, mapeado=${mappedStatus}, local=${currentStatusRef.current}, temQR=${!!currentQR}`);
+        console.log(`[InstanceCard] Poll: servidor=${serverStatus}, mapeado=${mappedStatus}, local=${currentStatusRef.current}, temQR=${!!currentQR}, serverQR=${!!serverQRCode}`);
         
-        // If status is qr_pending and we don't have a QR, fetch it immediately
-        if ((mappedStatus === 'qr_pending' || mappedStatus === 'connecting') && !currentQR) {
-          console.log(`[InstanceCard] Status qr_pending sem QR, buscando QR...`);
-          try {
-            const qrResponse = await baileysApi.getQRCode(instance.id);
-            if (qrResponse.success && qrResponse.data?.qrCode) {
-              console.log(`[InstanceCard] QR Code obtido!`);
-              setCurrentQR(qrResponse.data.qrCode);
-              updateInstanceStatus(instance.id, 'qr_pending', qrResponse.data.qrCode);
-              
-              // Start grace period
-              qrGracePeriodRef.current = true;
-              if (qrGraceTimeoutRef.current) clearTimeout(qrGraceTimeoutRef.current);
-              qrGraceTimeoutRef.current = setTimeout(() => {
-                qrGracePeriodRef.current = false;
-              }, QR_GRACE_PERIOD_MS);
-              return; // Status already updated with QR
-            }
-          } catch (qrErr) {
-            console.log(`[InstanceCard] QR não disponível ainda...`);
-          }
+        // If server has QR code and we don't, use it immediately
+        if (serverQRCode && !currentQR) {
+          console.log(`[InstanceCard] QR Code obtido via status polling!`);
+          setCurrentQR(serverQRCode);
+          updateInstanceStatus(instance.id, 'qr_pending', serverQRCode);
+          
+          // Start grace period
+          qrGracePeriodRef.current = true;
+          if (qrGraceTimeoutRef.current) clearTimeout(qrGraceTimeoutRef.current);
+          qrGraceTimeoutRef.current = setTimeout(() => {
+            qrGracePeriodRef.current = false;
+          }, QR_GRACE_PERIOD_MS);
+          return; // Status already updated with QR
         }
         
         // Sync status with server
