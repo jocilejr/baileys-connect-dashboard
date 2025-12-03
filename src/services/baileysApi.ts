@@ -51,11 +51,16 @@ const proxyRequest = async <T>(path: string, options?: RequestInit): Promise<Api
   }
 };
 
+const generateInstanceId = () => {
+  return 'inst_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+};
+
 export const baileysApi = {
   createInstance: async (name: string, webhookUrl?: string): Promise<ApiResponse<CreateInstanceResponse>> => {
+    const instanceId = generateInstanceId();
     return proxyRequest<CreateInstanceResponse>('/api/v1/instance/create', {
       method: 'POST',
-      body: JSON.stringify({ name, webhookUrl }),
+      body: JSON.stringify({ instanceId, name, webhookUrl }),
     });
   },
 
