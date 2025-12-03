@@ -55,9 +55,13 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         console.log(`[InstanceCard] QR Code obtido via HTTP para ${instance.id}`);
         setCurrentQR(response.data.qrCode);
         updateInstanceStatus(instance.id, 'qr_pending', response.data.qrCode);
+      } else {
+        // QR not available yet, keep polling silently
+        console.log(`[InstanceCard] QR ainda não disponível para ${instance.id}, aguardando...`);
       }
     } catch (error) {
-      console.error('[InstanceCard] Erro ao buscar QR code:', error);
+      // Silently ignore errors during polling - QR might not be ready yet
+      console.log('[InstanceCard] Aguardando QR code...');
     }
   }, [instance.id, instance.status, updateInstanceStatus]);
 
