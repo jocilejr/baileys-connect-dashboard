@@ -105,9 +105,26 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
       return null;
     }
 
+    // Handle both response formats: { instanceId, name } or { instance: { id, name } }
+    const instanceData = (response.data as any).instance || response.data;
+    const instanceId = instanceData.id || instanceData.instanceId || (response.data as any).instanceId;
+    const instanceName = instanceData.name || name;
+
+    if (!instanceId) {
+      console.error('[InstanceContext] ID da instância não encontrado na resposta:', response.data);
+      toast({
+        title: 'Erro ao criar instância',
+        description: 'Resposta inválida do servidor',
+        variant: 'destructive',
+      });
+      return null;
+    }
+
+    console.log(`[InstanceContext] Instância criada: ${instanceId}, nome: ${instanceName}`);
+
     const newInstance: Instance = {
-      id: response.data.instanceId,
-      name: response.data.name || name,
+      id: instanceId,
+      name: instanceName,
       status: 'qr_pending',
       createdAt: new Date(),
       apiKey: generateApiKey(),
