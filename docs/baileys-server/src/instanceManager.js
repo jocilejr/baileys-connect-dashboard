@@ -289,6 +289,7 @@ class InstanceManager {
   }
 
   // Reconnect WITHOUT deleting session files (for 515/428 errors after pairing)
+  // IMPORTANT: Keep instance in memory to avoid 404 errors during reconnection
   async reconnectWithoutDeletingSession(instanceId) {
     if (this.reconnecting.has(instanceId)) {
       console.log(`Instance ${instanceId} is already reconnecting, skipping...`);
@@ -302,23 +303,110 @@ class InstanceManager {
     }
 
     this.reconnecting.add(instanceId);
-    console.log(`[${instanceId}] Reconnecting with saved credentials...`);
+    console.log(`[${instanceId}] Reconnecting with saved credentials (keeping instance in memory)...`);
 
-    // Store instance data
-    const { name, webhookUrl } = instance;
+    // Update status to show reconnecting
+    instance.status = 'connecting';
+    instance.qrCode = null;
 
-    // Remove from memory (but NOT session files!)
-    this.instances.delete(instanceId);
+    // Close existing socket safely
+    if (instance.socket) {
+      try {
+        instance.socket.ev.removeAllListeners();
+        instance.socket.end();
+      } catch (e) {
+        console.log(`[${instanceId}] Error closing socket:`, e.message);
+      }
+      instance.socket = null;
+    }
 
-    // Wait before recreating
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Wait before creating new socket
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Recreate instance - will use saved credentials
+    // Create new socket using saved credentials
     try {
-      await this.createInstance(instanceId, name, webhookUrl);
+      const sessionPath = path.join(this.sessionsPath, instanceId);
+      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+      const { version } = await fetchLatestBaileysVersion();
+      
+      console.log(`[${instanceId}] Creating new socket with saved credentials...`);
+      
+      const socket = makeWASocket({
+        version,
+        logger,
+        printQRInTerminal: true,
+        auth: state,
+        browser: ['Ubuntu', 'Chrome', '120.0.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        connectTimeoutMs: 60000,
+        qrTimeout: 60000,
+        defaultQueryTimeoutMs: 60000,
+        retryRequestDelayMs: 2000,
+        keepAliveIntervalMs: 25000,
+        getMessage: async (key) => {
+          const msg = await instance.store.loadMessage(key.remoteJid, key.id);
+          return msg?.message || undefined;
+        }
+      });
+
+      instance.store.bind(socket.ev);
+      instance.socket = socket;
+
+      // Handle connection updates
+      socket.ev.on('connection.update', async (update) => {
+        console.log(`[${instanceId}] Connection update:`, JSON.stringify(update));
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          console.log(`[${instanceId}] QR code received (unexpected during reconnect with creds)`);
+          instance.status = 'qr_pending';
+          instance.qrCode = await QRCode.toDataURL(qr);
+          this.notifyWebSocket(instanceId, { type: 'qr', qrCode: instance.qrCode });
+        }
+
+        if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          console.log(`[${instanceId}] Connection closed during reconnect, statusCode: ${statusCode}`);
+          
+          if (statusCode === DisconnectReason.loggedOut) {
+            instance.status = 'disconnected';
+            instance.phone = null;
+            this.notifyWebSocket(instanceId, { type: 'status', status: 'disconnected' });
+          }
+        }
+
+        if (connection === 'open') {
+          instance.status = 'connected';
+          instance.qrCode = null;
+          instance.phone = socket.user?.id?.split(':')[0] || null;
+          this.reconnecting.delete(instanceId);
+          
+          this.notifyWebSocket(instanceId, {
+            type: 'status',
+            status: 'connected',
+            phone: instance.phone
+          });
+          
+          console.log(`[${instanceId}] Reconnected successfully: ${instance.phone}`);
+        }
+      });
+
+      socket.ev.on('creds.update', saveCreds);
+
+      socket.ev.on('messages.upsert', async (m) => {
+        const message = m.messages[0];
+        if (!message.key.fromMe && m.type === 'notify') {
+          if (instance.webhookUrl) {
+            this.sendWebhook(instance.webhookUrl, { instanceId, type: 'message', data: message });
+          }
+          this.notifyWebSocket(instanceId, { type: 'message', data: message });
+        }
+      });
+
     } catch (error) {
-      console.error(`Error recreating instance ${instanceId}:`, error);
-    } finally {
+      console.error(`[${instanceId}] Error during reconnection:`, error);
+      instance.status = 'error';
       this.reconnecting.delete(instanceId);
     }
   }
