@@ -169,6 +169,10 @@ class InstanceManager {
           if (statusCode === 515) {
             console.log(`[${instanceId}] Stream error 515 - this is expected after pairing, reconnecting...`);
             
+            // Wait for credentials to be fully saved before cleanup
+            console.log(`[${instanceId}] Waiting 3 seconds for credentials to save...`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
             // Clean up current socket
             try {
               socket.ev.removeAllListeners();
@@ -177,7 +181,7 @@ class InstanceManager {
               console.log(`[${instanceId}] Error during 515 cleanup:`, e.message);
             }
             
-            // Wait a bit then reconnect (WITHOUT deleting session - credentials are saved!)
+            // Wait a bit more then reconnect (WITHOUT deleting session - credentials are saved!)
             await new Promise(resolve => setTimeout(resolve, 2000));
             
             // Reconnect using saved credentials
