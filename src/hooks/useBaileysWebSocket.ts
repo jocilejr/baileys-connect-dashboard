@@ -2,11 +2,16 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { BAILEYS_WS_URL } from '@/services/baileysApi';
 
 interface WebSocketMessage {
-  event: 'qr' | 'status' | 'message' | 'error';
+  // Server can send either 'type' or 'event' field
+  type?: 'qr' | 'status' | 'message' | 'error';
+  event?: 'qr' | 'status' | 'message' | 'error';
+  // Server sends 'qrCode', we also accept 'qr'
   qr?: string;
+  qrCode?: string;
   status?: string;
   phone?: string;
   message?: unknown;
+  data?: unknown;
   error?: string;
 }
 
@@ -62,10 +67,15 @@ export const useBaileysWebSocket = ({
           const data: WebSocketMessage = JSON.parse(event.data);
           console.log(`[WebSocket] Mensagem recebida:`, data);
 
-          switch (data.event) {
+          // Support both 'type' and 'event' field names
+          const messageType = data.type || data.event;
+          // Support both 'qrCode' and 'qr' field names
+          const qrCode = data.qrCode || data.qr;
+
+          switch (messageType) {
             case 'qr':
-              if (data.qr && onQRCode) {
-                onQRCode(data.qr);
+              if (qrCode && onQRCode) {
+                onQRCode(qrCode);
               }
               break;
             case 'status':
@@ -74,8 +84,9 @@ export const useBaileysWebSocket = ({
               }
               break;
             case 'message':
-              if (data.message && onMessage) {
-                onMessage(data.message);
+              const messageData = data.data || data.message;
+              if (messageData && onMessage) {
+                onMessage(messageData);
               }
               break;
             case 'error':

@@ -184,12 +184,19 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       </CardHeader>
       
       <CardContent className="space-y-4">
-        {instance.status === 'qr_pending' && (currentQR || instance.qrCode) && (
+        {instance.status === 'qr_pending' && (
           <div className="flex flex-col items-center py-4">
-            <QRCodeDisplay 
-              qrCode={currentQR || instance.qrCode || ''} 
-              onRefresh={handleRefreshQR}
-            />
+            {(currentQR || instance.qrCode) ? (
+              <QRCodeDisplay 
+                qrCode={currentQR || instance.qrCode || ''} 
+                onRefresh={handleRefreshQR}
+              />
+            ) : (
+              <div className="flex flex-col items-center py-8 text-center">
+                <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4" />
+                <p className="text-sm text-muted-foreground">Aguardando QR Code...</p>
+              </div>
+            )}
           </div>
         )}
 
