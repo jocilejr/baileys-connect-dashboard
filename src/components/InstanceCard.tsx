@@ -44,11 +44,12 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const [currentQR, setCurrentQR] = useState<string | undefined>(instance.qrCode);
   const [isPolling, setIsPolling] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isStaleRef = useRef(false); // Track if instance was marked as not found on server
 
   // HTTP polling for QR code as fallback
   const pollForQRCode = useCallback(async () => {
-    // Guard: don't poll if instance.id is missing
-    if (!instance.id) return;
+    // Guard: don't poll if instance.id is missing or instance is stale
+    if (!instance.id || isStaleRef.current) return;
     if (instance.status !== 'qr_pending' && instance.status !== 'connecting') return;
     
     try {
@@ -59,7 +60,9 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         updateInstanceStatus(instance.id, 'qr_pending', response.data.qrCode);
       } else if (response.error === 'Instance not found') {
         // Instance was removed from server (server restart, etc)
-        console.log(`[InstanceCard] Instância ${instance.id} não encontrada no servidor, parando polling`);
+        console.log(`[InstanceCard] Instância ${instance.id} não encontrada no servidor, marcando como stale`);
+        // Mark as stale to prevent further reconnection attempts
+        isStaleRef.current = true;
         // Stop polling immediately
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
@@ -164,6 +167,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleConnect = async () => {
+    // Reset stale flag when user manually connects
+    isStaleRef.current = false;
     setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
     toast({
@@ -194,9 +199,9 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleRefreshQR = async () => {
-    // Guard: don't refresh if instance is disconnected
-    if (instance.status === 'disconnected') {
-      console.log('[InstanceCard] Ignorando refresh para instância desconectada');
+    // Guard: don't refresh if instance is disconnected or stale
+    if (instance.status === 'disconnected' || isStaleRef.current) {
+      console.log('[InstanceCard] Ignorando refresh para instância desconectada/stale');
       return;
     }
     setCurrentQR(undefined); // Clear current QR to trigger polling
