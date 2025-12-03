@@ -7,7 +7,7 @@ interface InstanceContextType {
   instances: Instance[];
   isLoading: boolean;
   addInstance: (name: string, webhookUrl?: string) => Promise<Instance | null>;
-  removeInstance: (id: string) => Promise<void>;
+  removeInstance: (id: string) => Promise<boolean>;
   updateInstanceStatus: (id: string, status: InstanceStatus, qrCode?: string, phone?: string) => void;
   getInstanceById: (id: string) => Instance | undefined;
   reconnectInstance: (id: string) => Promise<void>;
@@ -90,11 +90,11 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
     return newInstance;
   };
 
-  const removeInstance = async (id: string) => {
+  const removeInstance = async (id: string): Promise<boolean> => {
     // Guard: don't attempt to delete if id is missing
     if (!id) {
       console.error('Tentativa de remover instância sem ID');
-      return;
+      return false;
     }
     
     const response = await baileysApi.deleteInstance(id);
@@ -105,10 +105,11 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
         description: response.error || 'Erro desconhecido',
         variant: 'destructive',
       });
-      return;
+      return false;
     }
 
     setInstances(prev => prev.filter(instance => instance.id !== id));
+    return true;
   };
 
   const updateInstanceStatus = (
