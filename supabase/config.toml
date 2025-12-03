@@ -1,0 +1,4 @@
+project_id = "ysvnadhzkidrshqgvgni"
+
+[functions.baileys-proxy]
+verify_jwt = false
