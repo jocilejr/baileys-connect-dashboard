@@ -82,34 +82,22 @@ class InstanceManager {
 
         if (connection === 'close') {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           
-          // Don't reconnect if:
-          // 1. User logged out (statusCode === DisconnectReason.loggedOut)
-          // 2. We're waiting for QR scan (status === 'qr_pending')
-          // 3. Already reconnecting
-          // 4. Instance was just created (no phone connected yet)
-          const isWaitingForQR = instance.status === 'qr_pending' || instance.status === 'connecting';
-          const hadConnection = instance.phone !== null;
+          console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}`);
           
-          if (shouldReconnect && !this.reconnecting.has(instanceId) && hadConnection && !isWaitingForQR) {
-            instance.status = 'reconnecting';
-            console.log(`Reconnecting instance ${instanceId} (had previous connection)...`);
-            setTimeout(() => {
-              this.reconnectInstance(instanceId);
-            }, 3000);
-          } else if (!shouldReconnect) {
+          // Only update status to disconnected if user logged out
+          // Otherwise keep the current status (qr_pending stays qr_pending)
+          if (isLoggedOut) {
             instance.status = 'disconnected';
             instance.qrCode = null;
-            console.log(`Instance ${instanceId} logged out`);
+            instance.phone = null;
             this.notifyWebSocket(instanceId, {
               type: 'status',
               status: 'disconnected'
             });
-          } else if (isWaitingForQR) {
-            // Keep waiting for QR scan, don't change status
-            console.log(`Instance ${instanceId} waiting for QR scan...`);
           }
+          // No automatic reconnection - let the user trigger it manually
         }
 
         if (connection === 'open') {
