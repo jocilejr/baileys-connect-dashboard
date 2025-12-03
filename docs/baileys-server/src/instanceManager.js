@@ -18,10 +18,60 @@ class InstanceManager {
     this.instances = new Map();
     this.reconnecting = new Set(); // Track instances currently reconnecting
     this.sessionsPath = path.join(__dirname, '../sessions');
+    this.instancesFile = path.join(__dirname, '../instances.json');
     
     // Create sessions directory if it doesn't exist
     if (!fs.existsSync(this.sessionsPath)) {
       fs.mkdirSync(this.sessionsPath, { recursive: true });
+    }
+    
+    // Load saved instances on startup
+    this.loadSavedInstances();
+  }
+
+  // Save instances metadata to file
+  saveInstancesToFile() {
+    const instancesData = [];
+    for (const [id, instance] of this.instances) {
+      instancesData.push({
+        id,
+        name: instance.name,
+        webhookUrl: instance.webhookUrl,
+        createdAt: instance.createdAt
+      });
+    }
+    try {
+      fs.writeFileSync(this.instancesFile, JSON.stringify(instancesData, null, 2));
+      console.log(`Saved ${instancesData.length} instances to file`);
+    } catch (error) {
+      console.error('Error saving instances to file:', error);
+    }
+  }
+
+  // Load instances from file and recreate them
+  async loadSavedInstances() {
+    if (!fs.existsSync(this.instancesFile)) {
+      console.log('No saved instances file found');
+      return;
+    }
+
+    try {
+      const data = fs.readFileSync(this.instancesFile, 'utf8');
+      const instancesData = JSON.parse(data);
+      console.log(`Found ${instancesData.length} saved instances, recreating...`);
+      
+      for (const inst of instancesData) {
+        // Check if session files exist (meaning it might still be connected)
+        const sessionPath = path.join(this.sessionsPath, inst.id);
+        if (fs.existsSync(sessionPath)) {
+          console.log(`Recreating instance ${inst.id} (${inst.name})...`);
+          await this.createInstance(inst.id, inst.name, inst.webhookUrl);
+        } else {
+          console.log(`Session files not found for ${inst.id}, skipping...`);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading saved instances:', error);
     }
   }
 
@@ -63,6 +113,7 @@ class InstanceManager {
     };
 
     this.instances.set(instanceId, instance);
+    this.saveInstancesToFile(); // Save after creating
 
     try {
       const { version } = await fetchLatestBaileysVersion();
@@ -295,6 +346,7 @@ class InstanceManager {
 
     this.instances.delete(instanceId);
     this.reconnecting.delete(instanceId);
+    this.saveInstancesToFile(); // Save after deleting
     return { success: true };
   }
 

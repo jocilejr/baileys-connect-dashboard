@@ -99,7 +99,9 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
     
     const response = await baileysApi.deleteInstance(id);
     
-    if (!response.success) {
+    // If instance not found on server (404), still remove from frontend
+    // This handles cases where server restarted and lost instance in memory
+    if (!response.success && !response.error?.includes('not found')) {
       toast({
         title: 'Erro ao remover instância',
         description: response.error || 'Erro desconhecido',
@@ -108,6 +110,7 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
       return false;
     }
 
+    // Always remove from frontend state
     setInstances(prev => prev.filter(instance => instance.id !== id));
     return true;
   };
