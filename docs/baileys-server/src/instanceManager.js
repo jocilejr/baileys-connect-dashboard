@@ -121,7 +121,8 @@ class InstanceManager {
         auth: state,
         browser: ['Ubuntu', 'Chrome', '120.0.0'],
         syncFullHistory: false,
-        markOnlineOnConnect: false,
+        markOnlineOnConnect: true, // IMPORTANT: Sync presence with phone
+        fireInitQueries: true, // Send initial queries to sync state
         connectTimeoutMs: 60000,
         qrTimeout: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -166,22 +167,31 @@ class InstanceManager {
           
           // Handle stream errors (515) - This is EXPECTED after scanning QR!
           // After pairing, WhatsApp closes the connection and expects us to reconnect
+          // IMPORTANT: We need to wait for the PHONE to complete its side of pairing
           if (statusCode === 515) {
-            console.log(`[${instanceId}] Stream error 515 - this is expected after pairing, reconnecting...`);
+            console.log(`[${instanceId}] Stream error 515 - this is expected after pairing`);
             
-            // CRITICAL: Wait for credentials to be fully saved
-            console.log(`[${instanceId}] Waiting 8 seconds for credentials to fully save...`);
-            await new Promise(resolve => setTimeout(resolve, 8000));
+            // CRITICAL: Wait MUCH longer for:
+            // 1. Credentials to be fully saved
+            // 2. Phone to complete its side of the pairing
+            // 3. WhatsApp servers to propagate the device link
+            console.log(`[${instanceId}] Waiting 15 seconds for phone to complete pairing...`);
+            await new Promise(resolve => setTimeout(resolve, 15000));
             
             // Check if session files exist
             const sessionPath = path.join(this.sessionsPath, instanceId);
             const credsPath = path.join(sessionPath, 'creds.json');
             
             if (fs.existsSync(credsPath)) {
-              console.log(`[${instanceId}] Credentials file found, proceeding with reconnection`);
+              const credsSize = fs.statSync(credsPath).size;
+              console.log(`[${instanceId}] Credentials file found (${credsSize} bytes), proceeding with reconnection`);
             } else {
               console.log(`[${instanceId}] WARNING: Credentials file NOT found at ${credsPath}`);
               console.log(`[${instanceId}] Session files in folder:`, fs.existsSync(sessionPath) ? fs.readdirSync(sessionPath) : 'folder does not exist');
+              // Without credentials, we cannot reconnect - need new QR
+              instance.status = 'disconnected';
+              this.notifyWebSocket(instanceId, { type: 'status', status: 'disconnected' });
+              return;
             }
             
             // Remove listeners but don't force close
@@ -191,8 +201,9 @@ class InstanceManager {
               console.log(`[${instanceId}] Error removing listeners:`, e.message);
             }
             
-            // Wait before reconnecting
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // Additional wait before reconnecting
+            console.log(`[${instanceId}] Waiting 5 more seconds before reconnecting...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
             
             // Reconnect using saved credentials
             console.log(`[${instanceId}] Reconnecting after 515...`);
@@ -244,6 +255,15 @@ class InstanceManager {
           instance.phone = socket.user?.id?.split(':')[0] || null;
           instance.hadNewLogin = false;
           this.reconnecting.delete(instanceId);
+          
+          // IMPORTANT: Send presence update to sync with phone
+          // This helps the phone recognize the device as properly connected
+          try {
+            await socket.sendPresenceUpdate('available');
+            console.log(`[${instanceId}] Presence update sent to sync with phone`);
+          } catch (e) {
+            console.log(`[${instanceId}] Error sending presence update:`, e.message);
+          }
           
           this.notifyWebSocket(instanceId, {
             type: 'status',
@@ -338,7 +358,8 @@ class InstanceManager {
         auth: state,
         browser: ['Ubuntu', 'Chrome', '120.0.0'],
         syncFullHistory: false,
-        markOnlineOnConnect: false,
+        markOnlineOnConnect: true, // IMPORTANT: Sync presence with phone
+        fireInitQueries: true, // Send initial queries to sync state
         connectTimeoutMs: 60000,
         qrTimeout: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -381,6 +402,14 @@ class InstanceManager {
           instance.qrCode = null;
           instance.phone = socket.user?.id?.split(':')[0] || null;
           this.reconnecting.delete(instanceId);
+          
+          // IMPORTANT: Send presence update to sync with phone
+          try {
+            await socket.sendPresenceUpdate('available');
+            console.log(`[${instanceId}] Presence update sent to sync with phone`);
+          } catch (e) {
+            console.log(`[${instanceId}] Error sending presence update:`, e.message);
+          }
           
           this.notifyWebSocket(instanceId, {
             type: 'status',
