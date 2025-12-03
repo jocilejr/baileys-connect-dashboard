@@ -428,15 +428,6 @@ class InstanceManager {
   }
 
   async requestPairingCode(instanceId, phoneNumber) {
-    const instance = this.instances.get(instanceId);
-    if (!instance) {
-      return { success: false, error: 'Instance not found' };
-    }
-
-    if (!instance.socket) {
-      return { success: false, error: 'Socket not initialized' };
-    }
-
     // Clean phone number - remove all non-digits
     const cleanNumber = phoneNumber.replace(/\D/g, '');
     
@@ -444,18 +435,62 @@ class InstanceManager {
       return { success: false, error: 'Invalid phone number' };
     }
 
+    // Close existing instance and create fresh one for pairing
+    if (this.instances.has(instanceId)) {
+      const existing = this.instances.get(instanceId);
+      if (existing.socket) {
+        console.log(`[${instanceId}] Closing existing socket for pairing code`);
+        try {
+          existing.socket.ev.removeAllListeners();
+          existing.socket.end();
+        } catch (e) {}
+      }
+    }
+
+    // Delete session to ensure fresh start
+    const sessionPath = path.join(this.sessionsPath, instanceId);
+    if (fs.existsSync(sessionPath)) {
+      fs.rmSync(sessionPath, { recursive: true });
+    }
+
+    const instance = this.instances.get(instanceId) || {
+      id: instanceId,
+      name: instanceId,
+      webhookUrl: null,
+      createdAt: new Date()
+    };
+    
+    instance.status = 'connecting';
+    instance.qrCode = null;
+    instance.phone = null;
+    instance.pairingCode = null;
+    
+    this.instances.set(instanceId, instance);
+
     try {
+      console.log(`[${instanceId}] Creating socket for pairing code...`);
+      
+      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+
+      const socket = makeWASocket({
+        logger,
+        printQRInTerminal: false, // Disable QR for pairing code
+        auth: state,
+        browser: Browsers.ubuntu('Chrome'),
+        version: STABLE_VERSION
+      });
+
+      instance.socket = socket;
+
+      // Request pairing code immediately
       console.log(`[${instanceId}] Requesting pairing code for: ${cleanNumber}`);
       
-      // Check if already registered
-      if (instance.socket.authState?.creds?.registered) {
-        return { success: false, error: 'Already registered, please delete instance and create new one' };
-      }
-
-      const code = await instance.socket.requestPairingCode(cleanNumber);
+      // Wait for socket to be ready
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const code = await socket.requestPairingCode(cleanNumber);
       console.log(`[${instanceId}] Pairing code received: ${code}`);
       
-      // Store pairing code and notify via WebSocket
       instance.pairingCode = code;
       instance.status = 'pairing_pending';
       
@@ -464,9 +499,47 @@ class InstanceManager {
         pairingCode: code
       });
 
+      // Setup connection handlers
+      socket.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
+        console.log(`[${instanceId}] Pairing connection update:`, JSON.stringify(update));
+
+        if (connection === 'close') {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          console.log(`[${instanceId}] Pairing connection closed, statusCode: ${statusCode}`);
+          
+          if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
+            instance.status = 'disconnected';
+            instance.pairingCode = null;
+            this.notifyWebSocket(instanceId, { type: 'status', status: 'disconnected' });
+          } else if (statusCode === 515 || statusCode === 428) {
+            console.log(`[${instanceId}] Stream error during pairing - reconnecting...`);
+            setTimeout(() => this.reconnectInstance(instanceId), 3000);
+          }
+        }
+
+        if (connection === 'open') {
+          const phone = socket.user?.id?.split(':')[0] || null;
+          console.log(`[${instanceId}] Pairing successful: ${phone}`);
+          
+          instance.status = 'connected';
+          instance.pairingCode = null;
+          instance.phone = phone;
+          
+          this.notifyWebSocket(instanceId, {
+            type: 'status',
+            status: 'connected',
+            phone
+          });
+        }
+      });
+
+      socket.ev.on('creds.update', saveCreds);
+
       return { success: true, pairingCode: code };
     } catch (error) {
       console.error(`[${instanceId}] Error requesting pairing code:`, error);
+      instance.status = 'disconnected';
       return { success: false, error: error.message };
     }
   }

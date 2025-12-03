@@ -424,16 +424,12 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     setPairingCode(null);
     
     try {
-      // First make sure instance is in connecting state
-      await reconnectInstance(instance.id);
-      
-      // Wait a bit for socket to initialize
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+      // Backend agora cria um socket dedicado para pairing code
       const response = await baileysApi.requestPairingCode(instance.id, phoneNumber);
       
       if (response.success && response.data?.pairingCode) {
         setPairingCode(response.data.pairingCode);
+        updateInstanceStatus(instance.id, 'connecting'); // Status enquanto aguarda pareamento
         toast({
           title: 'Código gerado!',
           description: 'Digite este código no WhatsApp do seu celular.',
