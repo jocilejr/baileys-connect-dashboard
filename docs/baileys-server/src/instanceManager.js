@@ -250,66 +250,40 @@ class InstanceManager {
           if (statusCode === 515) {
             console.log(`[${instanceId}] Stream error 515, hadNewLogin: ${instance.hadNewLogin}`);
             
-            // Check if credentials file exists and has valid content
             const sessionPath = path.join(this.sessionsPath, instanceId);
-            const credsPath = path.join(sessionPath, 'creds.json');
-            let credsValid = false;
             
-            if (fs.existsSync(credsPath)) {
-              try {
-                const credsSize = fs.statSync(credsPath).size;
-                const credsContent = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
-                credsValid = credsSize > 500 && credsContent.me && credsContent.me.id;
-                console.log(`[${instanceId}] Credentials check: size=${credsSize}, hasMe=${!!credsContent.me}, valid=${credsValid}`);
-              } catch (e) {
-                console.log(`[${instanceId}] Error reading credentials:`, e.message);
-              }
-            }
-            
-            // If credentials are valid (pairing completed), ALWAYS reconnect
-            if (credsValid) {
-              console.log(`[${instanceId}] 515 with VALID credentials - reconnecting (pairing was successful)...`);
-              
-              instance.hadNewLogin = false;
-              
-              try {
-                socket.ev.removeAllListeners();
-              } catch (e) {
-                console.log(`[${instanceId}] Error removing listeners:`, e.message);
-              }
-              
-              // Wait for WhatsApp to process the pairing
-              console.log(`[${instanceId}] Waiting 5 seconds for WhatsApp to process pairing...`);
-              await new Promise(resolve => setTimeout(resolve, 5000));
-              
-              console.log(`[${instanceId}] Reconnecting after 515...`);
-              this.reconnectWithoutDeletingSession(instanceId);
-              return;
-            }
-            
-            // If credentials are NOT valid and this was a new login, need new QR
+            // CRITICAL: If this was a NEW LOGIN (QR scan), ALWAYS generate new QR
+            // The credentials saved during 515 after new login are INCOMPLETE
+            // They will pass basic validation but WhatsApp will reject them with 401
             if (instance.hadNewLogin) {
-              console.log(`[${instanceId}] 515 after new login with INCOMPLETE credentials - need new QR`);
+              console.log(`[${instanceId}] 515 after NEW LOGIN - credentials are incomplete, generating fresh QR`);
               
+              // Delete the incomplete session
               if (fs.existsSync(sessionPath)) {
                 console.log(`[${instanceId}] Deleting incomplete session files...`);
-                fs.rmSync(sessionPath, { recursive: true });
+                try {
+                  fs.rmSync(sessionPath, { recursive: true });
+                } catch (e) {
+                  console.log(`[${instanceId}] Error deleting session:`, e.message);
+                }
               }
               
               instance.hadNewLogin = false;
               instance.qrCode = null;
               instance.phone = null;
+              instance.status = 'qr_pending';
               
               try {
                 socket.ev.removeAllListeners();
+                socket.ws?.close();
               } catch (e) {
-                console.log(`[${instanceId}] Error removing listeners:`, e.message);
+                console.log(`[${instanceId}] Error cleaning up socket:`, e.message);
               }
               
+              // Wait before generating new QR
               console.log(`[${instanceId}] Waiting 3 seconds before generating new QR...`);
               await new Promise(resolve => setTimeout(resolve, 3000));
               
-              instance.status = 'qr_pending';
               this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
               
               console.log(`[${instanceId}] Creating fresh socket for new QR...`);
@@ -317,17 +291,58 @@ class InstanceManager {
               return;
             }
             
-            console.log(`[${instanceId}] 515 on existing session - attempting reconnect...`);
+            // For EXISTING sessions (not new login), check credentials and reconnect
+            const credsPath = path.join(sessionPath, 'creds.json');
+            let credsValid = false;
+            
+            if (fs.existsSync(credsPath)) {
+              try {
+                const credsSize = fs.statSync(credsPath).size;
+                const credsContent = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+                // Strict validation for existing sessions
+                credsValid = credsSize > 2000 && 
+                             credsContent.me?.id && 
+                             credsContent.noiseKey && 
+                             credsContent.signedIdentityKey &&
+                             credsContent.registrationId;
+                console.log(`[${instanceId}] Credentials check: size=${credsSize}, valid=${credsValid}`);
+              } catch (e) {
+                console.log(`[${instanceId}] Error reading credentials:`, e.message);
+              }
+            }
+            
+            if (!credsValid) {
+              console.log(`[${instanceId}] 515 with invalid credentials - generating new QR`);
+              
+              if (fs.existsSync(sessionPath)) {
+                try {
+                  fs.rmSync(sessionPath, { recursive: true });
+                } catch (e) {
+                  console.log(`[${instanceId}] Error deleting session:`, e.message);
+                }
+              }
+              
+              instance.status = 'qr_pending';
+              instance.qrCode = null;
+              instance.phone = null;
+              
+              try {
+                socket.ev.removeAllListeners();
+              } catch (e) {}
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
+              this.createInstance(instanceId, instance.name, instance.webhookUrl);
+              return;
+            }
+            
+            console.log(`[${instanceId}] 515 on existing session with valid credentials - reconnecting...`);
             
             try {
               socket.ev.removeAllListeners();
-            } catch (e) {
-              console.log(`[${instanceId}] Error removing listeners:`, e.message);
-            }
+            } catch (e) {}
             
             await new Promise(resolve => setTimeout(resolve, 2000));
-            
-            console.log(`[${instanceId}] Reconnecting after 515...`);
             this.reconnectWithoutDeletingSession(instanceId);
             return;
           }
