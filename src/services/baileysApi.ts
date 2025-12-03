@@ -14,7 +14,8 @@ interface CreateInstanceResponse {
 }
 
 interface InstanceStatusResponse {
-  instanceId: string;
+  id?: string;
+  instanceId?: string;
   status: string;
   phone?: string;
   name?: string;
