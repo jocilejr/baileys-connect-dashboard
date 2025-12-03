@@ -49,7 +49,10 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const reconnectAttemptRef = useRef(0); // Count 404 errors during reconnection
   const autoReconnectCountRef = useRef(0); // Limit auto-reconnects when QR expires
   const currentStatusRef = useRef(instance.status); // Track current status for callbacks
+  const qrGracePeriodRef = useRef(false); // Grace period after QR shown to allow 515 reconnect
+  const qrGraceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const MAX_AUTO_RECONNECTS = 3;
+  const QR_GRACE_PERIOD_MS = 30000; // 30 seconds grace period after QR is shown
 
   // Keep status ref in sync
   useEffect(() => {
@@ -75,6 +78,14 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         // Reset reconnection state on success
         isReconnectingRef.current = false;
         reconnectAttemptRef.current = 0;
+        
+        // Start grace period when QR is received - allow 515 reconnect to complete
+        qrGracePeriodRef.current = true;
+        if (qrGraceTimeoutRef.current) clearTimeout(qrGraceTimeoutRef.current);
+        qrGraceTimeoutRef.current = setTimeout(() => {
+          qrGracePeriodRef.current = false;
+          console.log(`[InstanceCard] Grace period expirou para ${instance.id}`);
+        }, QR_GRACE_PERIOD_MS);
       } else if (response.error === 'Instance not found') {
         // During reconnection grace period, allow retries (wait for server to recreate)
         if (isReconnectingRef.current && reconnectAttemptRef.current < 15) {
@@ -158,6 +169,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       pollingActiveRef.current = false;
       if (pollingTimeoutRef.current) clearTimeout(pollingTimeoutRef.current);
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (qrGraceTimeoutRef.current) clearTimeout(qrGraceTimeoutRef.current);
     };
   }, []);
 
@@ -166,6 +178,14 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     console.log(`[InstanceCard] QR Code recebido via WebSocket para ${instance.id}`);
     setCurrentQR(qr);
     updateInstanceStatus(instance.id, 'qr_pending', qr);
+    
+    // Start grace period when QR is received - allow 515 reconnect to complete
+    qrGracePeriodRef.current = true;
+    if (qrGraceTimeoutRef.current) clearTimeout(qrGraceTimeoutRef.current);
+    qrGraceTimeoutRef.current = setTimeout(() => {
+      qrGracePeriodRef.current = false;
+      console.log(`[InstanceCard] Grace period expirou para ${instance.id}`);
+    }, QR_GRACE_PERIOD_MS);
   }, [instance.id, updateInstanceStatus]);
 
   const handleStatusChange = useCallback((status: string, phone?: string) => {
@@ -182,6 +202,11 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       isReconnectingRef.current = false;
       reconnectAttemptRef.current = 0;
       isStaleRef.current = false;
+      qrGracePeriodRef.current = false; // Clear grace period on success
+      if (qrGraceTimeoutRef.current) {
+        clearTimeout(qrGraceTimeoutRef.current);
+        qrGraceTimeoutRef.current = null;
+      }
       pollingActiveRef.current = false;
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -214,8 +239,14 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       return;
     }
     
-    // If QR expired (disconnected while in qr_pending), auto-reconnect with limit
+    // If QR expired (disconnected while in qr_pending), check grace period first
     if (mappedStatus === 'disconnected' && currentStatusRef.current === 'qr_pending') {
+      // During grace period, the server might be doing 515 reconnect - DON'T interfere
+      if (qrGracePeriodRef.current) {
+        console.log(`[InstanceCard] Ignorando desconexão durante grace period (515 reconnect em andamento) para ${instance.id}`);
+        return; // Don't update status, don't reconnect - let server handle it
+      }
+      
       if (autoReconnectCountRef.current < MAX_AUTO_RECONNECTS) {
         autoReconnectCountRef.current += 1;
         console.log(`[InstanceCard] QR expirou para ${instance.id}, auto-reconectando... (tentativa ${autoReconnectCountRef.current}/${MAX_AUTO_RECONNECTS})`);
