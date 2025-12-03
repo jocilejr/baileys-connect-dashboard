@@ -29,6 +29,8 @@ const proxyRequest = async <T>(path: string, options?: RequestInit): Promise<Api
   try {
     const url = `${PROXY_URL}?path=${encodeURIComponent(path)}`;
     
+    console.log(`[API] Requesting: ${options?.method || 'GET'} ${path}`);
+    
     const response = await fetch(url, {
       method: options?.method || 'GET',
       headers: {
@@ -39,12 +41,19 @@ const proxyRequest = async <T>(path: string, options?: RequestInit): Promise<Api
     });
 
     const data = await response.json();
+    console.log(`[API] Response:`, data);
     
     if (!response.ok) {
-      return { success: false, error: data.error || 'Request failed' };
+      return { success: false, error: data.error || data.message || 'Request failed' };
     }
 
-    return data;
+    // Handle both wrapped and unwrapped responses from Baileys server
+    if (data.success !== undefined) {
+      return data;
+    }
+    
+    // Wrap raw response data
+    return { success: true, data: data as T };
   } catch (error) {
     console.error('API Error:', error);
     return { success: false, error: 'Erro de conexão com o servidor' };
@@ -65,7 +74,11 @@ export const baileysApi = {
   },
 
   listInstances: async (): Promise<ApiResponse<InstanceStatusResponse[]>> => {
-    return proxyRequest<InstanceStatusResponse[]>('/api/v1/instance/list');
+    const response = await proxyRequest<{ instances: InstanceStatusResponse[] }>('/api/v1/instance/list');
+    if (response.success && response.data?.instances) {
+      return { success: true, data: response.data.instances };
+    }
+    return { success: response.success, data: [], error: response.error };
   },
 
   getInstanceStatus: async (instanceId: string): Promise<ApiResponse<InstanceStatusResponse>> => {
