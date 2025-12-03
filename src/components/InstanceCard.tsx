@@ -45,6 +45,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const [isPolling, setIsPolling] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isStaleRef = useRef(false); // Track if instance was marked as not found on server
+  const isReconnectingRef = useRef(false); // Track if we're in reconnection grace period
+  const reconnectAttemptRef = useRef(0); // Count 404 errors during reconnection
 
   // HTTP polling for QR code as fallback
   const pollForQRCode = useCallback(async () => {
@@ -58,11 +60,23 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         console.log(`[InstanceCard] QR Code obtido via HTTP para ${instance.id}`);
         setCurrentQR(response.data.qrCode);
         updateInstanceStatus(instance.id, 'qr_pending', response.data.qrCode);
+        // Reset reconnection state on success
+        isReconnectingRef.current = false;
+        reconnectAttemptRef.current = 0;
       } else if (response.error === 'Instance not found') {
-        // Instance was removed from server (server restart, etc)
+        // During reconnection, allow up to 10 retries (20 seconds) for server to recreate instance
+        if (isReconnectingRef.current && reconnectAttemptRef.current < 10) {
+          reconnectAttemptRef.current += 1;
+          console.log(`[InstanceCard] Aguardando servidor recriar instância ${instance.id} (tentativa ${reconnectAttemptRef.current}/10)...`);
+          return; // Keep polling, don't mark as stale yet
+        }
+        
+        // Instance was removed from server (server restart, etc) or too many retries
         console.log(`[InstanceCard] Instância ${instance.id} não encontrada no servidor, marcando como stale`);
         // Mark as stale to prevent further reconnection attempts
         isStaleRef.current = true;
+        isReconnectingRef.current = false;
+        reconnectAttemptRef.current = 0;
         // Stop polling immediately
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
@@ -167,8 +181,10 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleConnect = async () => {
-    // Reset stale flag when user manually connects
+    // Reset all flags when user manually connects
     isStaleRef.current = false;
+    isReconnectingRef.current = true; // Enable grace period for 404 errors
+    reconnectAttemptRef.current = 0;
     setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
     toast({
@@ -204,6 +220,9 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       console.log('[InstanceCard] Ignorando refresh para instância desconectada/stale');
       return;
     }
+    // Enable grace period for refresh as well
+    isReconnectingRef.current = true;
+    reconnectAttemptRef.current = 0;
     setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
   };
