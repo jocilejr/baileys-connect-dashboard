@@ -54,11 +54,12 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     const mappedStatus: InstanceStatus = 
       status === 'open' || status === 'connected' ? 'connected' :
       status === 'connecting' ? 'connecting' :
-      status === 'qr' ? 'qr_pending' : 'disconnected';
+      status === 'qr' || status === 'qr_pending' ? 'qr_pending' : 'disconnected';
     
     updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
     
     if (mappedStatus === 'connected') {
+      setCurrentQR(undefined);
       toast({
         title: 'Conectado!',
         description: `WhatsApp conectado com sucesso.`,
@@ -75,10 +76,11 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     });
   }, [instance.id]);
 
-  // Connect WebSocket only for QR pending or connecting states
-  const shouldConnect = instance.status === 'qr_pending' || instance.status === 'connecting';
+  // Keep WebSocket connected while waiting for QR or during connection process
+  // Only disconnect when fully connected or explicitly disconnected
+  const shouldConnect = instance.status !== 'connected' && instance.status !== 'disconnected';
   
-  useBaileysWebSocket({
+  const { isConnected: wsConnected } = useBaileysWebSocket({
     instanceId: instance.id,
     enabled: shouldConnect,
     onQRCode: handleQRCode,
