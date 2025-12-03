@@ -73,6 +73,7 @@ class InstanceManager {
         if (qr) {
           instance.status = 'qr_pending';
           instance.qrCode = await QRCode.toDataURL(qr);
+          console.log(`QR Code generated for instance ${instanceId}`);
           this.notifyWebSocket(instanceId, {
             type: 'qr',
             qrCode: instance.qrCode
@@ -83,20 +84,31 @@ class InstanceManager {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
           
-          if (shouldReconnect && !this.reconnecting.has(instanceId)) {
+          // Don't reconnect if:
+          // 1. User logged out (statusCode === DisconnectReason.loggedOut)
+          // 2. We're waiting for QR scan (status === 'qr_pending')
+          // 3. Already reconnecting
+          // 4. Instance was just created (no phone connected yet)
+          const isWaitingForQR = instance.status === 'qr_pending' || instance.status === 'connecting';
+          const hadConnection = instance.phone !== null;
+          
+          if (shouldReconnect && !this.reconnecting.has(instanceId) && hadConnection && !isWaitingForQR) {
             instance.status = 'reconnecting';
-            console.log(`Reconnecting instance ${instanceId}...`);
-            // Add delay to prevent rapid reconnection loops
+            console.log(`Reconnecting instance ${instanceId} (had previous connection)...`);
             setTimeout(() => {
               this.reconnectInstance(instanceId);
             }, 3000);
           } else if (!shouldReconnect) {
             instance.status = 'disconnected';
             instance.qrCode = null;
+            console.log(`Instance ${instanceId} logged out`);
             this.notifyWebSocket(instanceId, {
               type: 'status',
               status: 'disconnected'
             });
+          } else if (isWaitingForQR) {
+            // Keep waiting for QR scan, don't change status
+            console.log(`Instance ${instanceId} waiting for QR scan...`);
           }
         }
 
