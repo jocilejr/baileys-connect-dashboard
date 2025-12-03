@@ -3,22 +3,6 @@ const router = express.Router();
 
 // Middleware to get instance manager
 const getInstanceManager = (req) => req.app.get('instanceManager');
-const getWsConnections = (req) => req.app.get('wsConnections');
-
-// Setup WebSocket notifier
-router.use((req, res, next) => {
-  const instanceManager = getInstanceManager(req);
-  const wsConnections = getWsConnections(req);
-  
-  instanceManager.setWsNotifier((instanceId, data) => {
-    const ws = wsConnections.get(instanceId);
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify(data));
-    }
-  });
-  
-  next();
-});
 
 // ==================== INSTANCE ROUTES ====================
 
