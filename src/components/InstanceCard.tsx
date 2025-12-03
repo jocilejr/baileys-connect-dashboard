@@ -104,10 +104,21 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     
     if (shouldPoll && !isPolling) {
       setIsPolling(true);
-      // Poll immediately
-      pollForQRCode();
-      // Then poll every 2 seconds
-      pollIntervalRef.current = setInterval(pollForQRCode, 2000);
+      // Add initial delay to let server process reconnect request first
+      // This prevents race condition where polling starts before reconnect API call completes
+      const initialDelay = setTimeout(() => {
+        pollForQRCode();
+        // Then poll every 2 seconds
+        pollIntervalRef.current = setInterval(pollForQRCode, 2000);
+      }, 1500); // Wait 1.5 seconds before first poll
+      
+      return () => {
+        clearTimeout(initialDelay);
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+      };
     } else if (!shouldPoll && isPolling) {
       setIsPolling(false);
       if (pollIntervalRef.current) {
