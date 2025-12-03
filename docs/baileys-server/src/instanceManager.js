@@ -624,9 +624,20 @@ class InstanceManager {
         console.log(`[${instanceId}] Removing all listeners and closing socket...`);
         instance.socket.ev.removeAllListeners();
         if (instance.socket.ws) {
-          instance.socket.ws.close();
+          // Only close if WebSocket is open (readyState 1) or connecting (readyState 0)
+          const wsState = instance.socket.ws.readyState;
+          if (wsState === 1) { // OPEN
+            instance.socket.ws.close();
+          } else {
+            console.log(`[${instanceId}] WebSocket not open (state: ${wsState}), skipping close`);
+          }
         }
-        instance.socket.end();
+        // Use end with error to safely terminate
+        try {
+          instance.socket.end(new Error('Manual reconnection'));
+        } catch (endError) {
+          console.log(`[${instanceId}] Socket end error (safe to ignore):`, endError.message);
+        }
       } catch (error) {
         console.log(`Error closing socket for ${instanceId}:`, error.message);
       }
