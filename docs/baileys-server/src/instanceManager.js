@@ -61,14 +61,8 @@ class InstanceManager {
       console.log(`Found ${instancesData.length} saved instances, recreating...`);
       
       for (const inst of instancesData) {
-        // Check if session files exist (meaning it might still be connected)
-        const sessionPath = path.join(this.sessionsPath, inst.id);
-        if (fs.existsSync(sessionPath)) {
-          console.log(`Recreating instance ${inst.id} (${inst.name})...`);
-          await this.createInstance(inst.id, inst.name, inst.webhookUrl);
-        } else {
-          console.log(`Session files not found for ${inst.id}, skipping...`);
-        }
+        console.log(`Recreating instance ${inst.id} (${inst.name})...`);
+        await this.createInstance(inst.id, inst.name, inst.webhookUrl);
       }
     } catch (error) {
       console.error('Error loading saved instances:', error);
@@ -109,11 +103,12 @@ class InstanceManager {
       phone: null,
       socket: null,
       store,
-      createdAt: new Date()
+      createdAt: new Date(),
+      hadNewLogin: false // Track if we just paired
     };
 
     this.instances.set(instanceId, instance);
-    this.saveInstancesToFile(); // Save after creating
+    this.saveInstancesToFile();
 
     try {
       const { version } = await fetchLatestBaileysVersion();
@@ -144,7 +139,13 @@ class InstanceManager {
       // Handle connection updates
       socket.ev.on('connection.update', async (update) => {
         console.log(`[${instanceId}] Connection update:`, JSON.stringify(update));
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect, qr, isNewLogin } = update;
+
+        // Track if this is a new login (QR was just scanned)
+        if (isNewLogin) {
+          console.log(`[${instanceId}] New login detected - credentials will be saved`);
+          instance.hadNewLogin = true;
+        }
 
         if (qr) {
           console.log(`[${instanceId}] QR code received from Baileys`);
@@ -161,15 +162,14 @@ class InstanceManager {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           
-          console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}`);
+          console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}, hadNewLogin: ${instance.hadNewLogin}`);
           
-          // Handle stream errors (515) - need to restart cleanly
+          // Handle stream errors (515) - This is EXPECTED after scanning QR!
+          // After pairing, WhatsApp closes the connection and expects us to reconnect
           if (statusCode === 515) {
-            console.log(`[${instanceId}] Stream error 515, will clean up and wait for manual reconnect`);
-            instance.status = 'disconnected';
-            instance.qrCode = null;
+            console.log(`[${instanceId}] Stream error 515 - this is expected after pairing, reconnecting...`);
             
-            // Clean up socket
+            // Clean up current socket
             try {
               socket.ev.removeAllListeners();
               socket.ws?.close();
@@ -177,46 +177,59 @@ class InstanceManager {
               console.log(`[${instanceId}] Error during 515 cleanup:`, e.message);
             }
             
-            this.notifyWebSocket(instanceId, {
-              type: 'status',
-              status: 'disconnected',
-              reason: 'stream_error'
-            });
+            // Wait a bit then reconnect (WITHOUT deleting session - credentials are saved!)
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Reconnect using saved credentials
+            console.log(`[${instanceId}] Reconnecting after 515 with saved credentials...`);
+            this.reconnectWithoutDeletingSession(instanceId);
             return;
           }
           
           // Handle precondition required (428) - connection terminated
           if (statusCode === 428) {
-            console.log(`[${instanceId}] Connection terminated (428), setting to disconnected`);
-            instance.status = 'disconnected';
-            instance.qrCode = null;
+            console.log(`[${instanceId}] Connection terminated (428), reconnecting...`);
             
-            this.notifyWebSocket(instanceId, {
-              type: 'status',
-              status: 'disconnected',
-              reason: 'connection_terminated'
-            });
+            // Clean up and reconnect
+            try {
+              socket.ev.removeAllListeners();
+              socket.ws?.close();
+            } catch (e) {
+              console.log(`[${instanceId}] Error during 428 cleanup:`, e.message);
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            this.reconnectWithoutDeletingSession(instanceId);
             return;
           }
           
-          // Only update status to disconnected if user logged out
+          // Only mark as disconnected and require new QR if user logged out
           if (isLoggedOut) {
+            console.log(`[${instanceId}] User logged out - will need new QR`);
             instance.status = 'disconnected';
             instance.qrCode = null;
             instance.phone = null;
+            instance.hadNewLogin = false;
+            
+            // Delete session files since user logged out
+            const sessionPath = path.join(this.sessionsPath, instanceId);
+            if (fs.existsSync(sessionPath)) {
+              fs.rmSync(sessionPath, { recursive: true });
+            }
+            
             this.notifyWebSocket(instanceId, {
               type: 'status',
               status: 'disconnected'
             });
           }
-          // No automatic reconnection - let the user trigger it manually
         }
 
         if (connection === 'open') {
           instance.status = 'connected';
           instance.qrCode = null;
           instance.phone = socket.user?.id?.split(':')[0] || null;
-          this.reconnecting.delete(instanceId); // Clear reconnecting flag
+          instance.hadNewLogin = false;
+          this.reconnecting.delete(instanceId);
           
           this.notifyWebSocket(instanceId, {
             type: 'status',
@@ -261,8 +274,8 @@ class InstanceManager {
     }
   }
 
-  async reconnectInstance(instanceId) {
-    // Prevent multiple simultaneous reconnections
+  // Reconnect WITHOUT deleting session files (for 515/428 errors after pairing)
+  async reconnectWithoutDeletingSession(instanceId) {
     if (this.reconnecting.has(instanceId)) {
       console.log(`Instance ${instanceId} is already reconnecting, skipping...`);
       return;
@@ -275,9 +288,44 @@ class InstanceManager {
     }
 
     this.reconnecting.add(instanceId);
-    console.log(`Starting reconnection for ${instanceId}...`);
+    console.log(`[${instanceId}] Reconnecting with saved credentials...`);
 
-    // Safely close existing socket - more aggressive cleanup
+    // Store instance data
+    const { name, webhookUrl } = instance;
+
+    // Remove from memory (but NOT session files!)
+    this.instances.delete(instanceId);
+
+    // Wait before recreating
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Recreate instance - will use saved credentials
+    try {
+      await this.createInstance(instanceId, name, webhookUrl);
+    } catch (error) {
+      console.error(`Error recreating instance ${instanceId}:`, error);
+    } finally {
+      this.reconnecting.delete(instanceId);
+    }
+  }
+
+  // Manual reconnect - deletes session to force new QR
+  async reconnectInstance(instanceId) {
+    if (this.reconnecting.has(instanceId)) {
+      console.log(`Instance ${instanceId} is already reconnecting, skipping...`);
+      return;
+    }
+
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      console.log(`Instance ${instanceId} not found for reconnection`);
+      return;
+    }
+
+    this.reconnecting.add(instanceId);
+    console.log(`Starting manual reconnection for ${instanceId}...`);
+
+    // Safely close existing socket
     if (instance.socket) {
       try {
         console.log(`[${instanceId}] Removing all listeners and closing socket...`);
@@ -304,7 +352,7 @@ class InstanceManager {
       fs.rmSync(sessionPath, { recursive: true });
     }
 
-    // Wait longer before recreating to ensure WhatsApp server clears the connection
+    // Wait before recreating
     console.log(`[${instanceId}] Waiting 2 seconds before creating new instance...`);
     await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -325,7 +373,7 @@ class InstanceManager {
       return { error: 'Instance not found' };
     }
 
-    // Close socket safely - aggressive cleanup
+    // Close socket safely
     if (instance.socket) {
       try {
         instance.socket.ev.removeAllListeners();
@@ -346,7 +394,7 @@ class InstanceManager {
 
     this.instances.delete(instanceId);
     this.reconnecting.delete(instanceId);
-    this.saveInstancesToFile(); // Save after deleting
+    this.saveInstancesToFile();
     return { success: true };
   }
 
@@ -424,7 +472,6 @@ class InstanceManager {
   }
 
   notifyWebSocket(instanceId, data) {
-    // This will be called from the main app with access to wsConnections
     if (this.wsNotifier) {
       this.wsNotifier(instanceId, data);
     }
