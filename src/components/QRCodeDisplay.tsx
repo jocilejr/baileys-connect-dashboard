@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { cn } from '@/lib/utils';
 import { RefreshCw, Smartphone } from 'lucide-react';
 import { Button } from './ui/button';
@@ -15,13 +15,25 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
   className 
 }) => {
   const [countdown, setCountdown] = useState(60);
+  const lastQRRef = useRef(qrCode);
 
+  // Reset countdown when QR code changes (new QR received from server)
+  useEffect(() => {
+    if (qrCode !== lastQRRef.current) {
+      lastQRRef.current = qrCode;
+      setCountdown(60);
+      console.log('[QRCodeDisplay] Novo QR recebido, countdown resetado');
+    }
+  }, [qrCode]);
+
+  // Countdown timer - auto refresh when expires
   useEffect(() => {
     const timer = setInterval(() => {
       setCountdown(prev => {
         if (prev <= 1) {
+          console.log('[QRCodeDisplay] QR expirou, solicitando novo...');
           onRefresh?.();
-          return 60;
+          return 60; // Reset countdown while waiting for new QR
         }
         return prev - 1;
       });
@@ -50,7 +62,12 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
             </div>
           )}
         </div>
-        <div className="absolute -top-2 -right-2 bg-primary text-primary-foreground text-xs font-bold px-2 py-1 rounded-full">
+        <div className={cn(
+          "absolute -top-2 -right-2 text-xs font-bold px-2 py-1 rounded-full",
+          countdown > 10 
+            ? "bg-primary text-primary-foreground" 
+            : "bg-destructive text-destructive-foreground animate-pulse"
+        )}>
           {countdown}s
         </div>
       </div>
