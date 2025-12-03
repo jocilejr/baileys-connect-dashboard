@@ -29,6 +29,8 @@ class InstanceManager {
       return { error: 'Instance already exists' };
     }
 
+    console.log(`Creating instance ${instanceId} with name: ${name}`);
+    
     const sessionPath = path.join(this.sessionsPath, instanceId);
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     
@@ -50,6 +52,7 @@ class InstanceManager {
 
     try {
       const { version } = await fetchLatestBaileysVersion();
+      console.log(`Using Baileys version: ${version.join('.')}`);
       
       const socket = makeWASocket({
         version,
@@ -68,12 +71,14 @@ class InstanceManager {
 
       // Handle connection updates
       socket.ev.on('connection.update', async (update) => {
+        console.log(`[${instanceId}] Connection update:`, JSON.stringify(update));
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+          console.log(`[${instanceId}] QR code received from Baileys`);
           instance.status = 'qr_pending';
           instance.qrCode = await QRCode.toDataURL(qr);
-          console.log(`QR Code generated for instance ${instanceId}`);
+          console.log(`[${instanceId}] QR Code converted to data URL`);
           this.notifyWebSocket(instanceId, {
             type: 'qr',
             qrCode: instance.qrCode
@@ -157,34 +162,44 @@ class InstanceManager {
     }
 
     const instance = this.instances.get(instanceId);
-    if (!instance) return;
+    if (!instance) {
+      console.log(`Instance ${instanceId} not found for reconnection`);
+      return;
+    }
 
     this.reconnecting.add(instanceId);
+    console.log(`Starting reconnection for ${instanceId}...`);
 
     // Safely close existing socket
     if (instance.socket) {
       try {
-        // Check if socket is in a state where it can be closed
         if (instance.socket.ws && instance.socket.ws.readyState !== undefined) {
           instance.socket.end();
         }
       } catch (error) {
         console.log(`Error closing socket for ${instanceId}:`, error.message);
-        // Continue with reconnection even if closing fails
       }
     }
 
     // Store instance data before removing
     const { name, webhookUrl } = instance;
 
-    // Remove instance
+    // Remove instance from memory
     this.instances.delete(instanceId);
 
+    // Delete session files to force new QR code generation
+    const sessionPath = path.join(this.sessionsPath, instanceId);
+    if (fs.existsSync(sessionPath)) {
+      console.log(`Deleting session files for ${instanceId} to generate new QR...`);
+      fs.rmSync(sessionPath, { recursive: true });
+    }
+
     // Wait a bit before recreating
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Recreate instance
     try {
+      console.log(`Creating new instance ${instanceId}...`);
       await this.createInstance(instanceId, name, webhookUrl);
     } catch (error) {
       console.error(`Error recreating instance ${instanceId}:`, error);
