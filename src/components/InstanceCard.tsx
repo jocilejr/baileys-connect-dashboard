@@ -280,7 +280,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const pollFailureCountRef = useRef(0);
   const MAX_POLL_FAILURES = 15;
 
-  // Status polling - ALWAYS trust server response over local state
+  // Combined status + QR polling - ALWAYS trust server response
   const pollInstanceStatus = useCallback(async () => {
     if (!instance.id) return;
     
@@ -299,19 +299,40 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
           serverStatus === 'connecting' ? 'connecting' :
           serverStatus === 'qr' || serverStatus === 'qr_pending' ? 'qr_pending' : 'disconnected';
         
-        console.log(`[InstanceCard] Poll: servidor=${serverStatus}, mapeado=${mappedStatus}, local=${currentStatusRef.current}`);
+        console.log(`[InstanceCard] Poll: servidor=${serverStatus}, mapeado=${mappedStatus}, local=${currentStatusRef.current}, temQR=${!!currentQR}`);
         
-        // ALWAYS sync with server - trust server as source of truth
+        // If status is qr_pending and we don't have a QR, fetch it immediately
+        if ((mappedStatus === 'qr_pending' || mappedStatus === 'connecting') && !currentQR) {
+          console.log(`[InstanceCard] Status qr_pending sem QR, buscando QR...`);
+          try {
+            const qrResponse = await baileysApi.getQRCode(instance.id);
+            if (qrResponse.success && qrResponse.data?.qrCode) {
+              console.log(`[InstanceCard] QR Code obtido!`);
+              setCurrentQR(qrResponse.data.qrCode);
+              updateInstanceStatus(instance.id, 'qr_pending', qrResponse.data.qrCode);
+              
+              // Start grace period
+              qrGracePeriodRef.current = true;
+              if (qrGraceTimeoutRef.current) clearTimeout(qrGraceTimeoutRef.current);
+              qrGraceTimeoutRef.current = setTimeout(() => {
+                qrGracePeriodRef.current = false;
+              }, QR_GRACE_PERIOD_MS);
+              return; // Status already updated with QR
+            }
+          } catch (qrErr) {
+            console.log(`[InstanceCard] QR não disponível ainda...`);
+          }
+        }
+        
+        // Sync status with server
         if (mappedStatus === 'connected' && currentStatusRef.current !== 'connected') {
           console.log(`[InstanceCard] Servidor conectado, sincronizando frontend`);
           handleStatusChange('connected', phone);
         } else if (mappedStatus !== 'connected' && currentStatusRef.current === 'connected') {
-          // Server says NOT connected but frontend thinks it is - FIX IT
           console.log(`[InstanceCard] Servidor NÃO conectado (${mappedStatus}), corrigindo frontend`);
           setCurrentQR(undefined);
           updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
         } else if (mappedStatus !== currentStatusRef.current) {
-          // Any other status change
           console.log(`[InstanceCard] Status mudou: ${currentStatusRef.current} -> ${mappedStatus}`);
           updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
         }
@@ -332,7 +353,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         updateInstanceStatus(instance.id, 'disconnected');
       }
     }
-  }, [instance.id, handleStatusChange, updateInstanceStatus]);
+  }, [instance.id, currentQR, handleStatusChange, updateInstanceStatus]);
 
   // Start status polling - poll ALL the time for active instances
   useEffect(() => {
@@ -342,7 +363,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     if (shouldPoll && !statusPollIntervalRef.current) {
       console.log(`[InstanceCard] Iniciando poll contínuo para ${instance.id}`);
       pollFailureCountRef.current = 0;
-      statusPollIntervalRef.current = setInterval(pollInstanceStatus, 3000);
+      // Poll every 2 seconds for faster QR detection
+      statusPollIntervalRef.current = setInterval(pollInstanceStatus, 2000);
       pollInstanceStatus();
     } else if (!shouldPoll && statusPollIntervalRef.current) {
       console.log(`[InstanceCard] Parando poll para ${instance.id}`);
