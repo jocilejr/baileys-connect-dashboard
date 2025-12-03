@@ -165,20 +165,57 @@ class InstanceManager {
           
           console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}, hadNewLogin: ${instance.hadNewLogin}`);
           
-          // Handle stream errors (515) - This can happen after scanning QR
-          // IMPORTANT: If this is a NEW LOGIN (QR just scanned), the credentials might be INCOMPLETE
-          // WhatsApp sends 515 before pairing fully completes, so saved creds are often invalid
+          // Handle stream errors (515) - This happens after pairing completes
+          // The 515 error is EXPECTED after successful QR scan - we need to reconnect
           if (statusCode === 515) {
             console.log(`[${instanceId}] Stream error 515, hadNewLogin: ${instance.hadNewLogin}`);
             
-            // If this was a NEW login attempt, the credentials are likely incomplete
-            // WhatsApp will reject them later with 401 device_removed
-            // Solution: Delete incomplete session and generate new QR
+            // Check if credentials file exists and has valid content
+            const sessionPath = path.join(this.sessionsPath, instanceId);
+            const credsPath = path.join(sessionPath, 'creds.json');
+            let credsValid = false;
+            
+            if (fs.existsSync(credsPath)) {
+              try {
+                const credsSize = fs.statSync(credsPath).size;
+                const credsContent = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
+                // Check if credentials have the critical 'me' field (set after successful pairing)
+                credsValid = credsSize > 500 && credsContent.me && credsContent.me.id;
+                console.log(`[${instanceId}] Credentials check: size=${credsSize}, hasMe=${!!credsContent.me}, valid=${credsValid}`);
+              } catch (e) {
+                console.log(`[${instanceId}] Error reading credentials:`, e.message);
+              }
+            }
+            
+            // If credentials are valid (pairing completed), ALWAYS reconnect
+            if (credsValid) {
+              console.log(`[${instanceId}] 515 with VALID credentials - reconnecting (pairing was successful)...`);
+              
+              // Reset hadNewLogin since pairing is complete
+              instance.hadNewLogin = false;
+              
+              // Remove listeners
+              try {
+                socket.ev.removeAllListeners();
+              } catch (e) {
+                console.log(`[${instanceId}] Error removing listeners:`, e.message);
+              }
+              
+              // Wait for WhatsApp to process the pairing
+              console.log(`[${instanceId}] Waiting 5 seconds for WhatsApp to process pairing...`);
+              await new Promise(resolve => setTimeout(resolve, 5000));
+              
+              // Reconnect using saved credentials
+              console.log(`[${instanceId}] Reconnecting after 515...`);
+              this.reconnectWithoutDeletingSession(instanceId);
+              return;
+            }
+            
+            // If credentials are NOT valid and this was a new login, need new QR
             if (instance.hadNewLogin) {
-              console.log(`[${instanceId}] 515 after new login - credentials are incomplete, need new QR`);
+              console.log(`[${instanceId}] 515 after new login with INCOMPLETE credentials - need new QR`);
               
               // Delete incomplete session files
-              const sessionPath = path.join(this.sessionsPath, instanceId);
               if (fs.existsSync(sessionPath)) {
                 console.log(`[${instanceId}] Deleting incomplete session files...`);
                 fs.rmSync(sessionPath, { recursive: true });
