@@ -104,31 +104,40 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   }, [instance.id, instance.status, updateInstanceStatus]);
 
   // Start polling when status is qr_pending and no QR code
+  // Use refs to avoid race conditions with state updates
+  const pollingActiveRef = useRef(false);
+  const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   useEffect(() => {
     // Guard: don't poll if instance.id is missing
     if (!instance.id) return;
     
     const shouldPoll = (instance.status === 'qr_pending' || instance.status === 'connecting') && !currentQR;
     
-    if (shouldPoll && !isPolling) {
+    if (shouldPoll && !pollingActiveRef.current) {
+      pollingActiveRef.current = true;
       setIsPolling(true);
+      
+      // Clear any existing timers
+      if (pollingTimeoutRef.current) clearTimeout(pollingTimeoutRef.current);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      
       // Add initial delay to let server process reconnect request first
-      // This prevents race condition where polling starts before reconnect API call completes
-      const initialDelay = setTimeout(() => {
+      pollingTimeoutRef.current = setTimeout(() => {
+        if (!pollingActiveRef.current) return;
         pollForQRCode();
         // Then poll every 2 seconds
-        pollIntervalRef.current = setInterval(pollForQRCode, 2000);
-      }, 1500); // Wait 1.5 seconds before first poll
-      
-      return () => {
-        clearTimeout(initialDelay);
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-      };
-    } else if (!shouldPoll && isPolling) {
+        pollIntervalRef.current = setInterval(() => {
+          if (pollingActiveRef.current) pollForQRCode();
+        }, 2000);
+      }, 1500);
+    } else if (!shouldPoll && pollingActiveRef.current) {
+      pollingActiveRef.current = false;
       setIsPolling(false);
+      if (pollingTimeoutRef.current) {
+        clearTimeout(pollingTimeoutRef.current);
+        pollingTimeoutRef.current = null;
+      }
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
@@ -136,12 +145,18 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     }
 
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
+      // Only cleanup on unmount, not on dependency changes
     };
-  }, [instance.status, currentQR, isPolling, pollForQRCode]);
+  }, [instance.id, instance.status, currentQR, pollForQRCode]);
+  
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      pollingActiveRef.current = false;
+      if (pollingTimeoutRef.current) clearTimeout(pollingTimeoutRef.current);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
 
   // WebSocket handlers
   const handleQRCode = useCallback((qr: string) => {

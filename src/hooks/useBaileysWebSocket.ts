@@ -134,9 +134,18 @@ export const useBaileysWebSocket = ({
           return;
         }
 
-        // Don't auto-reconnect - let the user trigger reconnection manually
-        // This prevents the infinite reconnection loop
-        console.log('[WebSocket] Conexão fechada. Use o botão Conectar para reconectar.');
+        // Auto-reconnect with limited attempts (for QR code updates)
+        if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS && enabled) {
+          reconnectAttemptsRef.current += 1;
+          console.log(`[WebSocket] Reconectando automaticamente (tentativa ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (enabledRef.current && instanceIdRef.current === instanceId && !isManualDisconnectRef.current) {
+              connect();
+            }
+          }, RECONNECT_DELAY);
+        } else {
+          console.log('[WebSocket] Limite de reconexão atingido ou desabilitado.');
+        }
       };
 
       wsRef.current = ws;
