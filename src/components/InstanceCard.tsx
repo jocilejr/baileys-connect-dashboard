@@ -60,7 +60,11 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const pollForQRCode = useCallback(async () => {
     // Guard: don't poll if instance.id is missing or instance is stale
     if (!instance.id || isStaleRef.current) return;
-    if (instance.status !== 'qr_pending' && instance.status !== 'connecting') return;
+    // Also check ref for most current status
+    if (currentStatusRef.current !== 'qr_pending' && currentStatusRef.current !== 'connecting') {
+      console.log(`[InstanceCard] Parando poll - status atual: ${currentStatusRef.current}`);
+      return;
+    }
     
     try {
       const response = await baileysApi.getQRCode(instance.id);
@@ -72,25 +76,16 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         isReconnectingRef.current = false;
         reconnectAttemptRef.current = 0;
       } else if (response.error === 'Instance not found') {
-        // During reconnection grace period, allow retries
-        if (isReconnectingRef.current && reconnectAttemptRef.current < 10) {
+        // During reconnection grace period, allow retries (wait for server to recreate)
+        if (isReconnectingRef.current && reconnectAttemptRef.current < 15) {
           reconnectAttemptRef.current += 1;
-          console.log(`[InstanceCard] Aguardando servidor recriar instância ${instance.id} (tentativa ${reconnectAttemptRef.current}/10)...`);
-          return; // Keep polling, don't mark as stale yet
+          console.log(`[InstanceCard] Aguardando servidor recriar instância ${instance.id} (tentativa ${reconnectAttemptRef.current}/15)...`);
+          return; // Keep polling, don't do anything else
         }
         
-        // Not in reconnection mode - trigger reconnect automatically
-        if (!isReconnectingRef.current && autoReconnectCountRef.current < MAX_AUTO_RECONNECTS) {
-          autoReconnectCountRef.current += 1;
-          isReconnectingRef.current = true;
-          reconnectAttemptRef.current = 0;
-          console.log(`[InstanceCard] Instância ${instance.id} não encontrada, reconectando automaticamente (tentativa ${autoReconnectCountRef.current}/${MAX_AUTO_RECONNECTS})...`);
-          reconnectInstance(instance.id);
-          return; // Keep polling to get new QR
-        }
-        
-        // Too many reconnect attempts - mark as stale
-        console.log(`[InstanceCard] Limite de reconexão atingido para ${instance.id}, marcando como stale`);
+        // Too many retries without success - just stop polling, don't auto-reconnect
+        // User should click "Conectar" manually
+        console.log(`[InstanceCard] Instância ${instance.id} não encontrada após ${reconnectAttemptRef.current} tentativas`);
         isStaleRef.current = true;
         isReconnectingRef.current = false;
         reconnectAttemptRef.current = 0;
@@ -109,7 +104,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       // Silently ignore errors during polling - QR might not be ready yet
       console.log('[InstanceCard] Aguardando QR code...');
     }
-  }, [instance.id, instance.status, updateInstanceStatus]);
+  }, [instance.id, updateInstanceStatus]);
 
   // Start polling when status is qr_pending and no QR code
   // Use refs to avoid race conditions with state updates
@@ -180,10 +175,24 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       status === 'connecting' ? 'connecting' :
       status === 'qr' || status === 'qr_pending' ? 'qr_pending' : 'disconnected';
     
-    // If connected successfully, reset auto-reconnect counter
+    // If connected successfully, stop ALL polling and reset counters
     if (mappedStatus === 'connected') {
+      console.log(`[InstanceCard] Conexão bem-sucedida para ${instance.id}, parando polling`);
       autoReconnectCountRef.current = 0;
+      isReconnectingRef.current = false;
+      reconnectAttemptRef.current = 0;
+      isStaleRef.current = false;
+      pollingActiveRef.current = false;
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      if (pollingTimeoutRef.current) {
+        clearTimeout(pollingTimeoutRef.current);
+        pollingTimeoutRef.current = null;
+      }
       setCurrentQR(undefined);
+      setIsPolling(false);
       updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
       toast({
         title: 'Conectado!',
@@ -206,7 +215,6 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     }
     
     // If QR expired (disconnected while in qr_pending), auto-reconnect with limit
-    // Use ref to get current status instead of stale prop value
     if (mappedStatus === 'disconnected' && currentStatusRef.current === 'qr_pending') {
       if (autoReconnectCountRef.current < MAX_AUTO_RECONNECTS) {
         autoReconnectCountRef.current += 1;
@@ -219,7 +227,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         return; // Don't update to disconnected, stay in qr_pending
       } else {
         console.log(`[InstanceCard] Limite de auto-reconexão atingido para ${instance.id}`);
-        autoReconnectCountRef.current = 0; // Reset for next manual attempt
+        autoReconnectCountRef.current = 0;
         toast({
           title: 'QR Code expirou',
           description: 'Clique em Conectar para tentar novamente.',
