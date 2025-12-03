@@ -2,7 +2,8 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { 
   DisconnectReason, 
   useMultiFileAuthState,
-  Browsers
+  Browsers,
+  fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
@@ -97,6 +98,19 @@ class InstanceManager {
     }
   }
 
+  // Helper to get clean instance data (without socket)
+  getCleanInstanceData(instance) {
+    return {
+      id: instance.id,
+      name: instance.name,
+      status: instance.status,
+      phone: instance.phone,
+      webhookUrl: instance.webhookUrl,
+      createdAt: instance.createdAt,
+      qrCode: instance.qrCode
+    };
+  }
+
   async createInstance(instanceId, name, webhookUrl = null) {
     // Close existing socket if any
     if (this.instances.has(instanceId)) {
@@ -131,13 +145,28 @@ class InstanceManager {
     this.saveInstancesToFile();
 
     try {
-      // Use default Baileys version (stable)
-      const socket = makeWASocket({
+      // Fetch latest version for WhatsApp compatibility
+      let version;
+      try {
+        const versionInfo = await fetchLatestBaileysVersion();
+        version = versionInfo.version;
+        console.log(`[${instanceId}] Using Baileys version: ${version.join('.')}`);
+      } catch (e) {
+        console.log(`[${instanceId}] Could not fetch version, using default`);
+      }
+
+      const socketOptions = {
         logger,
         printQRInTerminal: true,
         auth: state,
         browser: Browsers.ubuntu('Chrome')
-      });
+      };
+
+      if (version) {
+        socketOptions.version = version;
+      }
+
+      const socket = makeWASocket(socketOptions);
 
       instance.socket = socket;
 
@@ -244,11 +273,12 @@ class InstanceManager {
         }
       });
 
-      return instance;
+      // Return clean data without socket (avoid circular JSON)
+      return { success: true, instance: this.getCleanInstanceData(instance) };
     } catch (error) {
       console.error(`[${instanceId}] Error creating instance:`, error);
       instance.status = 'error';
-      throw error;
+      return { success: false, error: error.message };
     }
   }
 
@@ -280,12 +310,28 @@ class InstanceManager {
     try {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
       
-      const socket = makeWASocket({
+      // Fetch latest version for WhatsApp compatibility
+      let version;
+      try {
+        const versionInfo = await fetchLatestBaileysVersion();
+        version = versionInfo.version;
+        console.log(`[${instanceId}] Reconnect using Baileys version: ${version.join('.')}`);
+      } catch (e) {
+        console.log(`[${instanceId}] Could not fetch version for reconnect`);
+      }
+
+      const socketOptions = {
         logger,
         printQRInTerminal: true,
         auth: state,
         browser: Browsers.ubuntu('Chrome')
-      });
+      };
+
+      if (version) {
+        socketOptions.version = version;
+      }
+
+      const socket = makeWASocket(socketOptions);
 
       instance.socket = socket;
       instance.status = 'connecting';
@@ -357,7 +403,7 @@ class InstanceManager {
   async deleteInstance(instanceId) {
     const instance = this.instances.get(instanceId);
     if (!instance) {
-      return false;
+      return { success: false, error: 'Instance not found' };
     }
 
     console.log(`[${instanceId}] Deleting instance`);
@@ -379,7 +425,7 @@ class InstanceManager {
     this.instances.delete(instanceId);
     this.saveInstancesToFile();
 
-    return true;
+    return { success: true };
   }
 
   getInstance(instanceId) {
@@ -406,14 +452,14 @@ class InstanceManager {
     return instance?.qrCode || null;
   }
 
-  async sendMessage(instanceId, to, message) {
+  async sendMessage(instanceId, to, message, type = 'text', mediaUrl = null) {
     const instance = this.instances.get(instanceId);
     if (!instance || !instance.socket) {
-      throw new Error('Instance not found or not connected');
+      return { success: false, error: 'Instance not found or not connected' };
     }
 
     if (instance.status !== 'connected') {
-      throw new Error('Instance is not connected');
+      return { success: false, error: 'Instance is not connected' };
     }
 
     // Format phone number
@@ -422,103 +468,39 @@ class InstanceManager {
       jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
     }
 
-    console.log(`[${instanceId}] Sending message to ${jid}`);
+    console.log(`[${instanceId}] Sending ${type} message to ${jid}`);
 
     try {
-      const result = await instance.socket.sendMessage(jid, { text: message });
+      let result;
+      
+      switch (type) {
+        case 'image':
+          result = await instance.socket.sendMessage(jid, {
+            image: { url: mediaUrl },
+            caption: message
+          });
+          break;
+        case 'document':
+          result = await instance.socket.sendMessage(jid, {
+            document: { url: mediaUrl },
+            fileName: message || 'document',
+            caption: ''
+          });
+          break;
+        case 'audio':
+          result = await instance.socket.sendMessage(jid, {
+            audio: { url: mediaUrl },
+            mimetype: 'audio/mpeg'
+          });
+          break;
+        default:
+          result = await instance.socket.sendMessage(jid, { text: message });
+      }
+      
       return { success: true, messageId: result.key.id };
     } catch (error) {
       console.error(`[${instanceId}] Error sending message:`, error);
-      throw error;
-    }
-  }
-
-  async sendImage(instanceId, to, imageUrl, caption = '') {
-    const instance = this.instances.get(instanceId);
-    if (!instance || !instance.socket) {
-      throw new Error('Instance not found or not connected');
-    }
-
-    if (instance.status !== 'connected') {
-      throw new Error('Instance is not connected');
-    }
-
-    let jid = to;
-    if (!jid.includes('@')) {
-      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
-    }
-
-    console.log(`[${instanceId}] Sending image to ${jid}`);
-
-    try {
-      const result = await instance.socket.sendMessage(jid, {
-        image: { url: imageUrl },
-        caption
-      });
-      return { success: true, messageId: result.key.id };
-    } catch (error) {
-      console.error(`[${instanceId}] Error sending image:`, error);
-      throw error;
-    }
-  }
-
-  async sendDocument(instanceId, to, documentUrl, filename, caption = '') {
-    const instance = this.instances.get(instanceId);
-    if (!instance || !instance.socket) {
-      throw new Error('Instance not found or not connected');
-    }
-
-    if (instance.status !== 'connected') {
-      throw new Error('Instance is not connected');
-    }
-
-    let jid = to;
-    if (!jid.includes('@')) {
-      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
-    }
-
-    console.log(`[${instanceId}] Sending document to ${jid}`);
-
-    try {
-      const result = await instance.socket.sendMessage(jid, {
-        document: { url: documentUrl },
-        fileName: filename,
-        caption
-      });
-      return { success: true, messageId: result.key.id };
-    } catch (error) {
-      console.error(`[${instanceId}] Error sending document:`, error);
-      throw error;
-    }
-  }
-
-  async sendAudio(instanceId, to, audioUrl) {
-    const instance = this.instances.get(instanceId);
-    if (!instance || !instance.socket) {
-      throw new Error('Instance not found or not connected');
-    }
-
-    if (instance.status !== 'connected') {
-      throw new Error('Instance is not connected');
-    }
-
-    let jid = to;
-    if (!jid.includes('@')) {
-      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
-    }
-
-    console.log(`[${instanceId}] Sending audio to ${jid}`);
-
-    try {
-      const result = await instance.socket.sendMessage(jid, {
-        audio: { url: audioUrl },
-        mimetype: 'audio/mpeg',
-        ptt: true
-      });
-      return { success: true, messageId: result.key.id };
-    } catch (error) {
-      console.error(`[${instanceId}] Error sending audio:`, error);
-      throw error;
+      return { success: false, error: error.message };
     }
   }
 
@@ -537,12 +519,12 @@ class InstanceManager {
 
   setWebhook(instanceId, webhookUrl) {
     const instance = this.instances.get(instanceId);
-    if (!instance) {
-      return false;
+    if (instance) {
+      instance.webhookUrl = webhookUrl;
+      this.saveInstancesToFile();
+      return true;
     }
-    instance.webhookUrl = webhookUrl;
-    this.saveInstancesToFile();
-    return true;
+    return false;
   }
 }
 
