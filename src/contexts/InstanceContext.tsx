@@ -123,11 +123,13 @@ export const InstanceProvider: React.FC<InstanceProviderProps> = ({ children }) 
   ) => {
     setInstances(prev => prev.map(instance => {
       if (instance.id === id) {
+        // Clear phone when disconnecting or waiting for QR
+        const shouldClearPhone = status === 'disconnected' || status === 'qr_pending' || status === 'connecting';
         return {
           ...instance,
           status,
-          qrCode: qrCode || instance.qrCode,
-          phone: phone || instance.phone,
+          qrCode: qrCode || (shouldClearPhone ? undefined : instance.qrCode),
+          phone: shouldClearPhone ? undefined : (phone || instance.phone),
           lastSeen: status === 'connected' ? new Date() : instance.lastSeen,
         };
       }
