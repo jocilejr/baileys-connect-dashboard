@@ -15,6 +15,7 @@ const logger = pino({ level: 'silent' });
 class InstanceManager {
   constructor() {
     this.instances = new Map();
+    this.reconnecting = new Set(); // Track instances currently reconnecting
     this.sessionsPath = path.join(__dirname, '../sessions');
     
     // Create sessions directory if it doesn't exist
@@ -79,13 +80,17 @@ class InstanceManager {
         }
 
         if (connection === 'close') {
-          const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
           
-          if (shouldReconnect) {
+          if (shouldReconnect && !this.reconnecting.has(instanceId)) {
             instance.status = 'reconnecting';
             console.log(`Reconnecting instance ${instanceId}...`);
-            await this.reconnectInstance(instanceId);
-          } else {
+            // Add delay to prevent rapid reconnection loops
+            setTimeout(() => {
+              this.reconnectInstance(instanceId);
+            }, 3000);
+          } else if (!shouldReconnect) {
             instance.status = 'disconnected';
             instance.qrCode = null;
             this.notifyWebSocket(instanceId, {
@@ -99,6 +104,7 @@ class InstanceManager {
           instance.status = 'connected';
           instance.qrCode = null;
           instance.phone = socket.user?.id?.split(':')[0] || null;
+          this.reconnecting.delete(instanceId); // Clear reconnecting flag
           
           this.notifyWebSocket(instanceId, {
             type: 'status',
@@ -144,17 +150,47 @@ class InstanceManager {
   }
 
   async reconnectInstance(instanceId) {
+    // Prevent multiple simultaneous reconnections
+    if (this.reconnecting.has(instanceId)) {
+      console.log(`Instance ${instanceId} is already reconnecting, skipping...`);
+      return;
+    }
+
     const instance = this.instances.get(instanceId);
     if (!instance) return;
 
-    // Close existing socket
+    this.reconnecting.add(instanceId);
+
+    // Safely close existing socket
     if (instance.socket) {
-      instance.socket.end();
+      try {
+        // Check if socket is in a state where it can be closed
+        if (instance.socket.ws && instance.socket.ws.readyState !== undefined) {
+          instance.socket.end();
+        }
+      } catch (error) {
+        console.log(`Error closing socket for ${instanceId}:`, error.message);
+        // Continue with reconnection even if closing fails
+      }
     }
 
-    // Remove and recreate
+    // Store instance data before removing
+    const { name, webhookUrl } = instance;
+
+    // Remove instance
     this.instances.delete(instanceId);
-    await this.createInstance(instanceId, instance.name, instance.webhookUrl);
+
+    // Wait a bit before recreating
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Recreate instance
+    try {
+      await this.createInstance(instanceId, name, webhookUrl);
+    } catch (error) {
+      console.error(`Error recreating instance ${instanceId}:`, error);
+    } finally {
+      this.reconnecting.delete(instanceId);
+    }
   }
 
   async deleteInstance(instanceId) {
@@ -163,9 +199,13 @@ class InstanceManager {
       return { error: 'Instance not found' };
     }
 
-    // Close socket
+    // Close socket safely
     if (instance.socket) {
-      instance.socket.end();
+      try {
+        instance.socket.end();
+      } catch (error) {
+        console.log(`Error closing socket for ${instanceId}:`, error.message);
+      }
     }
 
     // Delete session files
@@ -175,6 +215,7 @@ class InstanceManager {
     }
 
     this.instances.delete(instanceId);
+    this.reconnecting.delete(instanceId);
     return { success: true };
   }
 
