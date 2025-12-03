@@ -169,25 +169,33 @@ class InstanceManager {
           if (statusCode === 515) {
             console.log(`[${instanceId}] Stream error 515 - this is expected after pairing, reconnecting...`);
             
-            // CRITICAL: Wait for credentials to be fully saved before ANY cleanup
-            // The saveCreds callback may still be running
-            console.log(`[${instanceId}] Waiting 5 seconds for all credentials to save...`);
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            // CRITICAL: Wait for credentials to be fully saved
+            console.log(`[${instanceId}] Waiting 8 seconds for credentials to fully save...`);
+            await new Promise(resolve => setTimeout(resolve, 8000));
             
-            // Only remove listeners, don't force close the socket
-            // Let it close naturally to avoid interrupting credential saves
+            // Check if session files exist
+            const sessionPath = path.join(this.sessionsPath, instanceId);
+            const credsPath = path.join(sessionPath, 'creds.json');
+            
+            if (fs.existsSync(credsPath)) {
+              console.log(`[${instanceId}] Credentials file found, proceeding with reconnection`);
+            } else {
+              console.log(`[${instanceId}] WARNING: Credentials file NOT found at ${credsPath}`);
+              console.log(`[${instanceId}] Session files in folder:`, fs.existsSync(sessionPath) ? fs.readdirSync(sessionPath) : 'folder does not exist');
+            }
+            
+            // Remove listeners but don't force close
             try {
               socket.ev.removeAllListeners();
             } catch (e) {
               console.log(`[${instanceId}] Error removing listeners:`, e.message);
             }
             
-            // Wait more before reconnecting
-            console.log(`[${instanceId}] Waiting 3 more seconds before reconnecting...`);
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            // Wait before reconnecting
+            await new Promise(resolve => setTimeout(resolve, 2000));
             
             // Reconnect using saved credentials
-            console.log(`[${instanceId}] Reconnecting after 515 with saved credentials...`);
+            console.log(`[${instanceId}] Reconnecting after 515...`);
             this.reconnectWithoutDeletingSession(instanceId);
             return;
           }
