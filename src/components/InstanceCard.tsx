@@ -194,6 +194,11 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleRefreshQR = async () => {
+    // Guard: don't refresh if instance is disconnected
+    if (instance.status === 'disconnected') {
+      console.log('[InstanceCard] Ignorando refresh para instância desconectada');
+      return;
+    }
     setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
   };
