@@ -26,8 +26,21 @@ class InstanceManager {
   }
 
   async createInstance(instanceId, name, webhookUrl = null) {
+    // If instance exists and has an active socket, close it first
     if (this.instances.has(instanceId)) {
-      return { error: 'Instance already exists' };
+      const existingInstance = this.instances.get(instanceId);
+      if (existingInstance.socket) {
+        console.log(`[${instanceId}] Closing existing socket before creating new instance`);
+        try {
+          existingInstance.socket.ev.removeAllListeners();
+          existingInstance.socket.ws?.close();
+          existingInstance.socket.end();
+        } catch (e) {
+          console.log(`[${instanceId}] Error closing existing socket:`, e.message);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      this.instances.delete(instanceId);
     }
 
     console.log(`Creating instance ${instanceId} with name: ${name}`);
@@ -66,6 +79,8 @@ class InstanceManager {
         connectTimeoutMs: 60000,
         qrTimeout: 60000,
         defaultQueryTimeoutMs: 60000,
+        retryRequestDelayMs: 2000,
+        keepAliveIntervalMs: 25000,
         getMessage: async (key) => {
           const msg = await store.loadMessage(key.remoteJid, key.id);
           return msg?.message || undefined;
@@ -97,8 +112,43 @@ class InstanceManager {
           
           console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}`);
           
+          // Handle stream errors (515) - need to restart cleanly
+          if (statusCode === 515) {
+            console.log(`[${instanceId}] Stream error 515, will clean up and wait for manual reconnect`);
+            instance.status = 'disconnected';
+            instance.qrCode = null;
+            
+            // Clean up socket
+            try {
+              socket.ev.removeAllListeners();
+              socket.ws?.close();
+            } catch (e) {
+              console.log(`[${instanceId}] Error during 515 cleanup:`, e.message);
+            }
+            
+            this.notifyWebSocket(instanceId, {
+              type: 'status',
+              status: 'disconnected',
+              reason: 'stream_error'
+            });
+            return;
+          }
+          
+          // Handle precondition required (428) - connection terminated
+          if (statusCode === 428) {
+            console.log(`[${instanceId}] Connection terminated (428), setting to disconnected`);
+            instance.status = 'disconnected';
+            instance.qrCode = null;
+            
+            this.notifyWebSocket(instanceId, {
+              type: 'status',
+              status: 'disconnected',
+              reason: 'connection_terminated'
+            });
+            return;
+          }
+          
           // Only update status to disconnected if user logged out
-          // Otherwise keep the current status (qr_pending stays qr_pending)
           if (isLoggedOut) {
             instance.status = 'disconnected';
             instance.qrCode = null;
@@ -176,12 +226,15 @@ class InstanceManager {
     this.reconnecting.add(instanceId);
     console.log(`Starting reconnection for ${instanceId}...`);
 
-    // Safely close existing socket
+    // Safely close existing socket - more aggressive cleanup
     if (instance.socket) {
       try {
-        if (instance.socket.ws && instance.socket.ws.readyState !== undefined) {
-          instance.socket.end();
+        console.log(`[${instanceId}] Removing all listeners and closing socket...`);
+        instance.socket.ev.removeAllListeners();
+        if (instance.socket.ws) {
+          instance.socket.ws.close();
         }
+        instance.socket.end();
       } catch (error) {
         console.log(`Error closing socket for ${instanceId}:`, error.message);
       }
@@ -200,8 +253,9 @@ class InstanceManager {
       fs.rmSync(sessionPath, { recursive: true });
     }
 
-    // Wait a bit before recreating
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Wait longer before recreating to ensure WhatsApp server clears the connection
+    console.log(`[${instanceId}] Waiting 2 seconds before creating new instance...`);
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Recreate instance
     try {
@@ -220,9 +274,13 @@ class InstanceManager {
       return { error: 'Instance not found' };
     }
 
-    // Close socket safely
+    // Close socket safely - aggressive cleanup
     if (instance.socket) {
       try {
+        instance.socket.ev.removeAllListeners();
+        if (instance.socket.ws) {
+          instance.socket.ws.close();
+        }
         instance.socket.end();
       } catch (error) {
         console.log(`Error closing socket for ${instanceId}:`, error.message);
