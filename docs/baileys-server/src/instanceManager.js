@@ -2,7 +2,6 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { 
   DisconnectReason, 
   useMultiFileAuthState,
-  makeInMemoryStore,
   Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
@@ -10,26 +9,22 @@ const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
 
-// Change to 'info' to see Baileys logs, 'silent' to hide them
-const logger = pino({ level: 'warn' });
+const logger = pino({ level: 'silent' });
 
 class InstanceManager {
   constructor() {
     this.instances = new Map();
-    this.reconnecting = new Set(); // Track instances currently reconnecting
     this.sessionsPath = path.join(__dirname, '../sessions');
     this.instancesFile = path.join(__dirname, '../instances.json');
+    this.wsClients = new Map();
     
-    // Create sessions directory if it doesn't exist
     if (!fs.existsSync(this.sessionsPath)) {
       fs.mkdirSync(this.sessionsPath, { recursive: true });
     }
     
-    // Load saved instances on startup
     this.loadSavedInstances();
   }
 
-  // Save instances metadata to file
   saveInstancesToFile() {
     const instancesData = [];
     for (const [id, instance] of this.instances) {
@@ -48,7 +43,6 @@ class InstanceManager {
     }
   }
 
-  // Load instances from file and recreate them
   async loadSavedInstances() {
     if (!fs.existsSync(this.instancesFile)) {
       console.log('No saved instances file found');
@@ -69,72 +63,58 @@ class InstanceManager {
     }
   }
 
-  // Check if a phone number is already connected to another instance
-  getInstanceByPhone(phone) {
-    for (const [id, instance] of this.instances) {
-      if (instance.phone && instance.phone === phone && instance.status === 'connected') {
-        return { id, instance };
-      }
+  registerWebSocket(instanceId, ws) {
+    if (!this.wsClients.has(instanceId)) {
+      this.wsClients.set(instanceId, new Set());
     }
-    return null;
+    this.wsClients.get(instanceId).add(ws);
+    console.log(`[${instanceId}] WebSocket client registered`);
   }
 
-  // Disconnect other instances using the same phone number
-  async disconnectOtherInstancesWithPhone(phone, currentInstanceId) {
-    for (const [id, instance] of this.instances) {
-      if (id !== currentInstanceId && instance.phone === phone && instance.status === 'connected') {
-        console.log(`[${id}] Disconnecting because phone ${phone} is connecting on ${currentInstanceId}`);
-        instance.status = 'disconnected';
-        instance.phone = null;
-        instance.qrCode = null;
-        
-        // Close socket
-        if (instance.socket) {
-          try {
-            instance.socket.ev.removeAllListeners();
-            instance.socket.end();
-          } catch (e) {
-            console.log(`[${id}] Error closing socket:`, e.message);
+  unregisterWebSocket(instanceId, ws) {
+    if (this.wsClients.has(instanceId)) {
+      this.wsClients.get(instanceId).delete(ws);
+      console.log(`[${instanceId}] WebSocket client unregistered`);
+    }
+  }
+
+  notifyWebSocket(instanceId, data) {
+    const clients = this.wsClients.get(instanceId);
+    if (clients && clients.size > 0) {
+      const message = JSON.stringify(data);
+      clients.forEach(ws => {
+        try {
+          if (ws.readyState === 1) {
+            ws.send(message);
           }
-          instance.socket = null;
+        } catch (e) {
+          console.log(`[${instanceId}] Error sending to WebSocket:`, e.message);
         }
-        
-        // Delete session files
-        const sessionPath = path.join(this.sessionsPath, id);
-        if (fs.existsSync(sessionPath)) {
-          fs.rmSync(sessionPath, { recursive: true });
-        }
-        
-        // Notify frontend
-        this.notifyWebSocket(id, { type: 'status', status: 'disconnected' });
-      }
+      });
+      console.log(`[${instanceId}] Notified ${clients.size} WebSocket clients`);
+    } else {
+      console.log(`[${instanceId}] No WebSocket clients to notify`);
     }
   }
 
   async createInstance(instanceId, name, webhookUrl = null) {
-    // If instance exists and has an active socket, close it first
+    // Close existing socket if any
     if (this.instances.has(instanceId)) {
-      const existingInstance = this.instances.get(instanceId);
-      if (existingInstance.socket) {
-        console.log(`[${instanceId}] Closing existing socket before creating new instance`);
+      const existing = this.instances.get(instanceId);
+      if (existing.socket) {
+        console.log(`[${instanceId}] Closing existing socket`);
         try {
-          existingInstance.socket.ev.removeAllListeners();
-          existingInstance.socket.ws?.close();
-          existingInstance.socket.end();
-        } catch (e) {
-          console.log(`[${instanceId}] Error closing existing socket:`, e.message);
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+          existing.socket.ev.removeAllListeners();
+          existing.socket.end();
+        } catch (e) {}
       }
       this.instances.delete(instanceId);
     }
 
-    console.log(`Creating instance ${instanceId} with name: ${name}`);
+    console.log(`[${instanceId}] Creating instance: ${name}`);
     
     const sessionPath = path.join(this.sessionsPath, instanceId);
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    
-    const store = makeInMemoryStore({ logger });
     
     const instance = {
       id: instanceId,
@@ -144,51 +124,31 @@ class InstanceManager {
       qrCode: null,
       phone: null,
       socket: null,
-      store,
-      createdAt: new Date(),
-      hadNewLogin: false // Track if we just paired
+      createdAt: new Date()
     };
 
     this.instances.set(instanceId, instance);
     this.saveInstancesToFile();
 
     try {
-      // Don't use fetchLatestBaileysVersion - it can return unstable versions
-      // Let Baileys use its default bundled version which is tested
-      console.log(`[${instanceId}] Creating socket with default Baileys version...`);
-      
+      // Use default Baileys version (stable)
       const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false,
-        markOnlineOnConnect: false,
-        getMessage: async (key) => {
-          const msg = await store.loadMessage(key.remoteJid, key.id);
-          return msg?.message || undefined;
-        }
+        browser: Browsers.ubuntu('Chrome')
       });
 
-      store.bind(socket.ev);
       instance.socket = socket;
 
-      // Handle connection updates
       socket.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
         console.log(`[${instanceId}] Connection update:`, JSON.stringify(update));
-        const { connection, lastDisconnect, qr, isNewLogin } = update;
-
-        // Track if this is a new login (QR was just scanned)
-        if (isNewLogin) {
-          console.log(`[${instanceId}] New login detected - credentials will be saved`);
-          instance.hadNewLogin = true;
-        }
 
         if (qr) {
-          console.log(`[${instanceId}] QR code received from Baileys`);
+          console.log(`[${instanceId}] QR code received`);
           instance.status = 'qr_pending';
           instance.qrCode = await QRCode.toDataURL(qr);
-          console.log(`[${instanceId}] QR Code converted to data URL`);
           this.notifyWebSocket(instanceId, {
             type: 'qr',
             qrCode: instance.qrCode
@@ -197,202 +157,16 @@ class InstanceManager {
 
         if (connection === 'close') {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-          const errorContent = lastDisconnect?.error?.data?.content;
-          const isDeviceRemoved = errorContent?.some?.(c => c.tag === 'conflict' && c.attrs?.type === 'device_removed');
+          console.log(`[${instanceId}] Connection closed, statusCode: ${statusCode}`);
           
-          console.log(`Connection closed for ${instanceId}, statusCode: ${statusCode}, loggedOut: ${isLoggedOut}, deviceRemoved: ${isDeviceRemoved}, hadNewLogin: ${instance.hadNewLogin}`);
-          
-          // Handle 401 (Unauthorized) - device was removed from WhatsApp
-          // This can happen when:
-          // 1. User removes the linked device from their phone
-          // 2. Same number is connected on another instance
-          // 3. WhatsApp kicks the device for security reasons
-          if (statusCode === 401 || isDeviceRemoved) {
-            const wasRecovering515 = instance.recovering515;
-            const recoveryAge = instance.recovery515Time ? (Date.now() - instance.recovery515Time) : 0;
-            
-            console.log(`[${instanceId}] Device removed (401), wasRecovering515=${wasRecovering515}, recoveryAge=${recoveryAge}ms`);
-            
-            // Clean up socket
-            try {
-              socket.ev.removeAllListeners();
-              socket.ws?.close();
-            } catch (e) {}
-            
-            // Delete session files since device was removed
-            const sessionPath = path.join(this.sessionsPath, instanceId);
-            if (fs.existsSync(sessionPath)) {
-              console.log(`[${instanceId}] Deleting session files after 401...`);
-              try {
-                fs.rmSync(sessionPath, { recursive: true });
-              } catch (e) {
-                console.log(`[${instanceId}] Error deleting session:`, e.message);
-              }
-            }
-            
-            // Reset instance state
+          // Handle different disconnect reasons
+          if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+            console.log(`[${instanceId}] Logged out - deleting session`);
             instance.status = 'disconnected';
             instance.qrCode = null;
             instance.phone = null;
-            instance.hadNewLogin = false;
-            instance.recovering515 = false;
-            instance.recovery515Time = null;
-            this.reconnecting.delete(instanceId);
             
-            // If we were recovering from 515 (just scanned QR) and got 401,
-            // this is a DEVICE CONFLICT - another device is already connected
-            // In this case, automatically generate a new QR so user can try again
-            // Check within 2 minutes (120 seconds) of recovery start
-            if (wasRecovering515 && recoveryAge < 120000) {
-              console.log(`[${instanceId}] 401 after 515 recovery (${recoveryAge}ms) - device conflict, generating new QR...`);
-              
-              // Notify frontend about the conflict
-              this.notifyWebSocket(instanceId, {
-                type: 'status',
-                status: 'qr_pending',
-                reason: 'device_conflict'
-              });
-              
-              // Wait a bit before generating new QR
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              
-              instance.status = 'qr_pending';
-              console.log(`[${instanceId}] Creating fresh socket for new QR after device conflict...`);
-              this.createInstance(instanceId, instance.name, instance.webhookUrl);
-              return;
-            }
-            
-            // Normal 401 - just mark as disconnected
-            console.log(`[${instanceId}] Normal 401 disconnect - marking as disconnected`);
-            this.notifyWebSocket(instanceId, {
-              type: 'status',
-              status: 'disconnected',
-              reason: 'device_removed'
-            });
-            
-            return;
-          }
-          
-          // Handle stream errors (515) - This happens after pairing completes
-          if (statusCode === 515) {
-            const wasNewLogin = instance.hadNewLogin;
-            console.log(`[${instanceId}] Stream error 515, hadNewLogin: ${wasNewLogin}`);
-            
-            // Clean up current socket
-            try {
-              socket.ev.removeAllListeners();
-              socket.ws?.close();
-            } catch (e) {
-              console.log(`[${instanceId}] Error cleaning up socket:`, e.message);
-            }
-            
-            // IMPORTANT: Wait for credentials to be fully written to disk
-            // The 515 comes very quickly after QR scan, credentials might not be complete yet
-            const waitTime = wasNewLogin ? 8000 : 3000;
-            console.log(`[${instanceId}] Waiting ${waitTime/1000}s for credentials to sync...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            
-            const sessionPath = path.join(this.sessionsPath, instanceId);
-            const credsPath = path.join(sessionPath, 'creds.json');
-            
-            // Check if credentials are complete with STRICT validation
-            let credsValid = false;
-            let credsContent = null;
-            
-            if (fs.existsSync(credsPath)) {
-              try {
-                const credsSize = fs.statSync(credsPath).size;
-                credsContent = JSON.parse(fs.readFileSync(credsPath, 'utf-8'));
-                
-                // STRICT validation - all required fields must exist
-                const hasMe = credsContent.me?.id;
-                const hasNoiseKey = !!credsContent.noiseKey;
-                const hasSignedIdentityKey = !!credsContent.signedIdentityKey;
-                const hasRegistrationId = !!credsContent.registrationId;
-                const hasSignedPreKey = !!credsContent.signedPreKey;
-                const hasAdvSecretKey = !!credsContent.advSecretKey;
-                
-                credsValid = credsSize > 1500 && 
-                             hasMe && 
-                             hasNoiseKey && 
-                             hasSignedIdentityKey && 
-                             hasRegistrationId &&
-                             hasSignedPreKey;
-                
-                console.log(`[${instanceId}] Credentials check: size=${credsSize}, me=${hasMe}, noise=${hasNoiseKey}, signedId=${hasSignedIdentityKey}, reg=${hasRegistrationId}, signedPre=${hasSignedPreKey}, valid=${credsValid}`);
-              } catch (e) {
-                console.log(`[${instanceId}] Error reading credentials:`, e.message);
-              }
-            } else {
-              console.log(`[${instanceId}] No credentials file found`);
-            }
-            
-            // If credentials are valid, try to reconnect
-            if (credsValid) {
-              console.log(`[${instanceId}] Credentials valid - attempting reconnect...`);
-              instance.hadNewLogin = false;
-              
-              // Track that we're recovering from 515 after new login
-              // If we get 401 within 60 seconds, we should NOT generate new QR (device conflict)
-              if (wasNewLogin) {
-                instance.recovering515 = true;
-                instance.recovery515Time = Date.now();
-              }
-              
-              this.reconnectWithoutDeletingSession(instanceId);
-              return;
-            }
-            
-            // Credentials invalid or missing - need new QR
-            console.log(`[${instanceId}] Credentials invalid/incomplete - generating new QR`);
-            
-            if (fs.existsSync(sessionPath)) {
-              try {
-                fs.rmSync(sessionPath, { recursive: true });
-              } catch (e) {
-                console.log(`[${instanceId}] Error deleting session:`, e.message);
-              }
-            }
-            
-            instance.hadNewLogin = false;
-            instance.qrCode = null;
-            instance.phone = null;
-            instance.status = 'qr_pending';
-            
-            this.notifyWebSocket(instanceId, { type: 'status', status: 'qr_pending' });
-            
-            console.log(`[${instanceId}] Creating fresh socket for new QR...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            this.createInstance(instanceId, instance.name, instance.webhookUrl);
-            return;
-          }
-          
-          // Handle precondition required (428)
-          if (statusCode === 428) {
-            console.log(`[${instanceId}] Connection terminated (428), reconnecting...`);
-            
-            try {
-              socket.ev.removeAllListeners();
-              socket.ws?.close();
-            } catch (e) {
-              console.log(`[${instanceId}] Error during 428 cleanup:`, e.message);
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            this.reconnectWithoutDeletingSession(instanceId);
-            return;
-          }
-          
-          // Only mark as disconnected and require new QR if user logged out
-          if (isLoggedOut) {
-            console.log(`[${instanceId}] User logged out - will need new QR`);
-            instance.status = 'disconnected';
-            instance.qrCode = null;
-            instance.phone = null;
-            instance.hadNewLogin = false;
-            
-            const sessionPath = path.join(this.sessionsPath, instanceId);
+            // Delete session files
             if (fs.existsSync(sessionPath)) {
               fs.rmSync(sessionPath, { recursive: true });
             }
@@ -401,380 +175,200 @@ class InstanceManager {
               type: 'status',
               status: 'disconnected'
             });
+          } else if (statusCode === 515 || statusCode === 428) {
+            // Stream error or precondition - reconnect
+            console.log(`[${instanceId}] Stream error ${statusCode} - reconnecting in 3s...`);
+            setTimeout(() => {
+              this.reconnectInstance(instanceId);
+            }, 3000);
+          } else {
+            // Other errors - try to reconnect
+            console.log(`[${instanceId}] Unknown error - reconnecting in 5s...`);
+            instance.status = 'disconnected';
+            this.notifyWebSocket(instanceId, {
+              type: 'status',
+              status: 'disconnected'
+            });
+            setTimeout(() => {
+              this.reconnectInstance(instanceId);
+            }, 5000);
           }
         }
 
         if (connection === 'open') {
           const phone = socket.user?.id?.split(':')[0] || null;
-          
-          // Check if this phone is already connected to another instance
-          // and disconnect the other instance
-          if (phone) {
-            await this.disconnectOtherInstancesWithPhone(phone, instanceId);
-          }
+          console.log(`[${instanceId}] Connected: ${phone}`);
           
           instance.status = 'connected';
           instance.qrCode = null;
           instance.phone = phone;
-          instance.hadNewLogin = false;
-          this.reconnecting.delete(instanceId);
-          
-          // DON'T clear recovering515 immediately - keep it for 2 minutes
-          // so that if a 401 comes after connection opens, we still detect it
-          // as part of the recovery process and auto-generate new QR
-          if (instance.recovering515) {
-            console.log(`[${instanceId}] Connection opened during 515 recovery - keeping recovery flag for 2 minutes`);
-            // Clear the flag after 2 minutes of stable connection
-            setTimeout(() => {
-              if (instance.status === 'connected') {
-                console.log(`[${instanceId}] Connection stable for 2 minutes - clearing recovery flag`);
-                instance.recovering515 = false;
-                instance.recovery515Time = null;
-              }
-            }, 120000);
-          }
-          
-          // Send presence update to sync with phone
-          try {
-            await socket.sendPresenceUpdate('available');
-            console.log(`[${instanceId}] Presence update sent to sync with phone`);
-          } catch (e) {
-            console.log(`[${instanceId}] Error sending presence update:`, e.message);
-          }
           
           this.notifyWebSocket(instanceId, {
             type: 'status',
             status: 'connected',
-            phone: instance.phone
+            phone
           });
-          
-          console.log(`Instance ${instanceId} connected: ${instance.phone}`);
-        }
-      });
 
-      // Handle credentials update
-      socket.ev.on('creds.update', saveCreds);
-
-      // Handle incoming messages
-      socket.ev.on('messages.upsert', async (m) => {
-        const message = m.messages[0];
-        if (!message.key.fromMe && m.type === 'notify') {
-          console.log(`New message on ${instanceId}:`, message);
-          
+          // Send webhook notification
           if (instance.webhookUrl) {
             this.sendWebhook(instance.webhookUrl, {
+              event: 'connection',
               instanceId,
-              type: 'message',
-              data: message
+              status: 'connected',
+              phone
             });
           }
-
-          this.notifyWebSocket(instanceId, {
-            type: 'message',
-            data: message
-          });
         }
       });
 
-      return { success: true, instanceId };
+      socket.ev.on('creds.update', saveCreds);
+
+      socket.ev.on('messages.upsert', async (m) => {
+        if (instance.webhookUrl && m.messages) {
+          for (const msg of m.messages) {
+            if (!msg.key.fromMe) {
+              this.sendWebhook(instance.webhookUrl, {
+                event: 'message',
+                instanceId,
+                message: {
+                  from: msg.key.remoteJid,
+                  id: msg.key.id,
+                  text: msg.message?.conversation || 
+                        msg.message?.extendedTextMessage?.text || 
+                        '[media]',
+                  timestamp: msg.messageTimestamp
+                }
+              });
+            }
+          }
+        }
+      });
+
+      return instance;
     } catch (error) {
-      console.error(`Error creating instance ${instanceId}:`, error);
+      console.error(`[${instanceId}] Error creating instance:`, error);
       instance.status = 'error';
-      return { error: error.message };
+      throw error;
     }
   }
 
-  // Reconnect WITHOUT deleting session files (for 515/428 errors after pairing)
-  async reconnectWithoutDeletingSession(instanceId) {
-    if (this.reconnecting.has(instanceId)) {
-      console.log(`Instance ${instanceId} is already reconnecting, skipping...`);
-      return;
-    }
-
+  async reconnectInstance(instanceId) {
     const instance = this.instances.get(instanceId);
     if (!instance) {
-      console.log(`Instance ${instanceId} not found for reconnection`);
+      console.log(`[${instanceId}] Instance not found for reconnect`);
       return;
     }
 
-    this.reconnecting.add(instanceId);
-    console.log(`[${instanceId}] Reconnecting with saved credentials (keeping instance in memory)...`);
-
-    instance.status = 'connecting';
-    instance.qrCode = null;
-
-    // Close existing socket safely
+    console.log(`[${instanceId}] Reconnecting...`);
+    
+    // Close existing socket
     if (instance.socket) {
       try {
         instance.socket.ev.removeAllListeners();
         instance.socket.end();
-      } catch (e) {
-        console.log(`[${instanceId}] Error closing socket:`, e.message);
-      }
-      instance.socket = null;
+      } catch (e) {}
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Check if session exists
+    const sessionPath = path.join(this.sessionsPath, instanceId);
+    if (!fs.existsSync(sessionPath)) {
+      console.log(`[${instanceId}] No session - creating fresh instance`);
+      await this.createInstance(instanceId, instance.name, instance.webhookUrl);
+      return;
+    }
 
     try {
-      const sessionPath = path.join(this.sessionsPath, instanceId);
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-      
-      console.log(`[${instanceId}] Creating new socket with saved credentials...`);
       
       const socket = makeWASocket({
         logger,
         printQRInTerminal: true,
         auth: state,
-        browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false,
-        markOnlineOnConnect: false,
-        getMessage: async (key) => {
-          const msg = await instance.store.loadMessage(key.remoteJid, key.id);
-          return msg?.message || undefined;
-        }
+        browser: Browsers.ubuntu('Chrome')
       });
 
-      instance.store.bind(socket.ev);
       instance.socket = socket;
+      instance.status = 'connecting';
 
-      // Handle connection updates during reconnect
       socket.ev.on('connection.update', async (update) => {
-        console.log(`[${instanceId}] Connection update:`, JSON.stringify(update));
         const { connection, lastDisconnect, qr } = update;
+        console.log(`[${instanceId}] Reconnect update:`, JSON.stringify(update));
 
         if (qr) {
-          console.log(`[${instanceId}] QR code received (unexpected during reconnect with creds)`);
+          console.log(`[${instanceId}] New QR code during reconnect`);
           instance.status = 'qr_pending';
           instance.qrCode = await QRCode.toDataURL(qr);
-          this.notifyWebSocket(instanceId, { type: 'qr', qrCode: instance.qrCode });
+          this.notifyWebSocket(instanceId, {
+            type: 'qr',
+            qrCode: instance.qrCode
+          });
         }
 
         if (connection === 'close') {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const errorContent = lastDisconnect?.error?.data?.content;
-          const isDeviceRemoved = errorContent?.some?.(c => c.tag === 'conflict' && c.attrs?.type === 'device_removed');
+          console.log(`[${instanceId}] Reconnect closed, statusCode: ${statusCode}`);
           
-          console.log(`[${instanceId}] Connection closed during reconnect, statusCode: ${statusCode}, deviceRemoved: ${isDeviceRemoved}`);
-          
-          // Handle 401 (Unauthorized) - device was removed from WhatsApp
-          if (statusCode === 401 || isDeviceRemoved) {
-            const wasRecovering515 = instance.recovering515;
-            const recoveryAge = instance.recovery515Time ? (Date.now() - instance.recovery515Time) : 0;
-            
-            console.log(`[${instanceId}] 401 during reconnect, wasRecovering515=${wasRecovering515}, recoveryAge=${recoveryAge}ms`);
-            
-            // Clean up socket
-            try {
-              socket.ev.removeAllListeners();
-              socket.ws?.close();
-            } catch (e) {}
-            
-            // Delete session files
-            const sessionPath = path.join(this.sessionsPath, instanceId);
-            if (fs.existsSync(sessionPath)) {
-              console.log(`[${instanceId}] Deleting session files after 401...`);
-              try {
-                fs.rmSync(sessionPath, { recursive: true });
-              } catch (e) {
-                console.log(`[${instanceId}] Error deleting session:`, e.message);
-              }
-            }
-            
-            // Reset instance state
+          if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
+            console.log(`[${instanceId}] Session invalid - need new QR`);
             instance.status = 'disconnected';
             instance.qrCode = null;
             instance.phone = null;
-            instance.hadNewLogin = false;
-            instance.recovering515 = false;
-            instance.recovery515Time = null;
-            this.reconnecting.delete(instanceId);
             
-            // If we were recovering from 515, this is a device conflict
-            // Generate new QR automatically so user can try again
-            // Check within 2 minutes (120 seconds) of recovery start
-            if (wasRecovering515 && recoveryAge < 120000) {
-              console.log(`[${instanceId}] Device conflict after 515 (${recoveryAge}ms) - generating new QR...`);
-              
-              this.notifyWebSocket(instanceId, {
-                type: 'status',
-                status: 'qr_pending',
-                reason: 'device_conflict'
-              });
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              
-              instance.status = 'qr_pending';
-              console.log(`[${instanceId}] Creating fresh socket for new QR...`);
-              this.createInstance(instanceId, instance.name, instance.webhookUrl);
-              return;
+            if (fs.existsSync(sessionPath)) {
+              fs.rmSync(sessionPath, { recursive: true });
             }
             
-            // Normal 401 - just disconnect
-            this.notifyWebSocket(instanceId, {
-              type: 'status',
-              status: 'disconnected',
-              reason: 'device_removed'
-            });
-            return;
-          }
-          
-          if (statusCode === DisconnectReason.loggedOut) {
-            instance.status = 'disconnected';
-            instance.phone = null;
-            instance.recovering515 = false;
-            instance.recovery515Time = null;
-            this.reconnecting.delete(instanceId);
-            this.notifyWebSocket(instanceId, { type: 'status', status: 'disconnected' });
+            // Create fresh instance for new QR
+            await this.createInstance(instanceId, instance.name, instance.webhookUrl);
+          } else {
+            // Retry reconnect
+            setTimeout(() => {
+              this.reconnectInstance(instanceId);
+            }, 5000);
           }
         }
 
         if (connection === 'open') {
           const phone = socket.user?.id?.split(':')[0] || null;
-          
-          // Check if this phone is already connected to another instance
-          if (phone) {
-            await this.disconnectOtherInstancesWithPhone(phone, instanceId);
-          }
+          console.log(`[${instanceId}] Reconnected: ${phone}`);
           
           instance.status = 'connected';
           instance.qrCode = null;
           instance.phone = phone;
-          instance.hadNewLogin = false;
-          this.reconnecting.delete(instanceId);
-          
-          // DON'T clear recovering515 immediately - keep it for 2 minutes
-          // so that if a 401 comes after connection opens, we still detect it
-          if (instance.recovering515) {
-            console.log(`[${instanceId}] Reconnected during 515 recovery - keeping recovery flag for 2 minutes`);
-            setTimeout(() => {
-              if (instance.status === 'connected') {
-                console.log(`[${instanceId}] Connection stable for 2 minutes - clearing recovery flag`);
-                instance.recovering515 = false;
-                instance.recovery515Time = null;
-              }
-            }, 120000);
-          }
-          
-          try {
-            await socket.sendPresenceUpdate('available');
-            console.log(`[${instanceId}] Presence update sent to sync with phone`);
-          } catch (e) {
-            console.log(`[${instanceId}] Error sending presence update:`, e.message);
-          }
           
           this.notifyWebSocket(instanceId, {
             type: 'status',
             status: 'connected',
-            phone: instance.phone
+            phone
           });
-          
-          console.log(`[${instanceId}] Reconnected successfully: ${instance.phone}`);
         }
       });
 
       socket.ev.on('creds.update', saveCreds);
 
-      socket.ev.on('messages.upsert', async (m) => {
-        const message = m.messages[0];
-        if (!message.key.fromMe && m.type === 'notify') {
-          if (instance.webhookUrl) {
-            this.sendWebhook(instance.webhookUrl, { instanceId, type: 'message', data: message });
-          }
-          this.notifyWebSocket(instanceId, { type: 'message', data: message });
-        }
-      });
-
     } catch (error) {
-      console.error(`[${instanceId}] Error during reconnection:`, error);
-      instance.status = 'error';
-      this.reconnecting.delete(instanceId);
-    }
-  }
-
-  // Manual reconnect - deletes session to force new QR
-  async reconnectInstance(instanceId) {
-    if (this.reconnecting.has(instanceId)) {
-      console.log(`Instance ${instanceId} is already reconnecting, skipping...`);
-      return;
-    }
-
-    const instance = this.instances.get(instanceId);
-    if (!instance) {
-      console.log(`Instance ${instanceId} not found for reconnection`);
-      return;
-    }
-
-    this.reconnecting.add(instanceId);
-    console.log(`Starting manual reconnection for ${instanceId}...`);
-
-    // Safely close existing socket
-    if (instance.socket) {
-      try {
-        console.log(`[${instanceId}] Removing all listeners and closing socket...`);
-        instance.socket.ev.removeAllListeners();
-        if (instance.socket.ws) {
-          // Only close if WebSocket is open (readyState 1) or connecting (readyState 0)
-          const wsState = instance.socket.ws.readyState;
-          if (wsState === 1) { // OPEN
-            instance.socket.ws.close();
-          } else {
-            console.log(`[${instanceId}] WebSocket not open (state: ${wsState}), skipping close`);
-          }
-        }
-        // Use end with error to safely terminate
-        try {
-          instance.socket.end(new Error('Manual reconnection'));
-        } catch (endError) {
-          console.log(`[${instanceId}] Socket end error (safe to ignore):`, endError.message);
-        }
-      } catch (error) {
-        console.log(`Error closing socket for ${instanceId}:`, error.message);
-      }
-    }
-
-    const { name, webhookUrl } = instance;
-
-    this.instances.delete(instanceId);
-
-    const sessionPath = path.join(this.sessionsPath, instanceId);
-    if (fs.existsSync(sessionPath)) {
-      console.log(`Deleting session files for ${instanceId} to generate new QR...`);
-      fs.rmSync(sessionPath, { recursive: true });
-    }
-
-    console.log(`[${instanceId}] Waiting 2 seconds before creating new instance...`);
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    try {
-      console.log(`Creating new instance ${instanceId}...`);
-      await this.createInstance(instanceId, name, webhookUrl);
-    } catch (error) {
-      console.error(`Error recreating instance ${instanceId}:`, error);
-    } finally {
-      this.reconnecting.delete(instanceId);
+      console.error(`[${instanceId}] Reconnect error:`, error);
+      setTimeout(() => {
+        this.reconnectInstance(instanceId);
+      }, 5000);
     }
   }
 
   async deleteInstance(instanceId) {
     const instance = this.instances.get(instanceId);
     if (!instance) {
-      return { error: 'Instance not found' };
+      return false;
     }
 
-    // Close socket if exists
+    console.log(`[${instanceId}] Deleting instance`);
+
+    // Close socket
     if (instance.socket) {
       try {
         instance.socket.ev.removeAllListeners();
         instance.socket.end();
-      } catch (error) {
-        console.log(`Error closing socket for ${instanceId}:`, error.message);
-      }
+      } catch (e) {}
     }
-
-    // Remove from memory
-    this.instances.delete(instanceId);
-    this.saveInstancesToFile();
 
     // Delete session files
     const sessionPath = path.join(this.sessionsPath, instanceId);
@@ -782,7 +376,10 @@ class InstanceManager {
       fs.rmSync(sessionPath, { recursive: true });
     }
 
-    return { success: true };
+    this.instances.delete(instanceId);
+    this.saveInstancesToFile();
+
+    return true;
   }
 
   getInstance(instanceId) {
@@ -804,130 +401,148 @@ class InstanceManager {
     return result;
   }
 
-  async sendMessage(instanceId, to, message, options = {}) {
+  getQRCode(instanceId) {
+    const instance = this.instances.get(instanceId);
+    return instance?.qrCode || null;
+  }
+
+  async sendMessage(instanceId, to, message) {
     const instance = this.instances.get(instanceId);
     if (!instance || !instance.socket) {
-      return { error: 'Instance not found or not connected' };
+      throw new Error('Instance not found or not connected');
     }
 
     if (instance.status !== 'connected') {
-      return { error: 'Instance is not connected' };
+      throw new Error('Instance is not connected');
     }
 
+    // Format phone number
+    let jid = to;
+    if (!jid.includes('@')) {
+      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
+    }
+
+    console.log(`[${instanceId}] Sending message to ${jid}`);
+
     try {
-      // Format number
-      let jid = to;
-      if (!jid.includes('@')) {
-        jid = jid.replace(/[^\d]/g, '') + '@s.whatsapp.net';
-      }
-
-      let result;
-
-      if (options.image) {
-        result = await instance.socket.sendMessage(jid, {
-          image: { url: options.image },
-          caption: message
-        });
-      } else if (options.document) {
-        result = await instance.socket.sendMessage(jid, {
-          document: { url: options.document },
-          fileName: options.fileName || 'document',
-          mimetype: options.mimetype || 'application/octet-stream',
-          caption: message
-        });
-      } else if (options.audio) {
-        result = await instance.socket.sendMessage(jid, {
-          audio: { url: options.audio },
-          mimetype: 'audio/mp4',
-          ptt: options.ptt || false
-        });
-      } else {
-        result = await instance.socket.sendMessage(jid, { text: message });
-      }
-
+      const result = await instance.socket.sendMessage(jid, { text: message });
       return { success: true, messageId: result.key.id };
     } catch (error) {
-      console.error(`Error sending message on ${instanceId}:`, error);
-      return { error: error.message };
+      console.error(`[${instanceId}] Error sending message:`, error);
+      throw error;
+    }
+  }
+
+  async sendImage(instanceId, to, imageUrl, caption = '') {
+    const instance = this.instances.get(instanceId);
+    if (!instance || !instance.socket) {
+      throw new Error('Instance not found or not connected');
+    }
+
+    if (instance.status !== 'connected') {
+      throw new Error('Instance is not connected');
+    }
+
+    let jid = to;
+    if (!jid.includes('@')) {
+      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
+    }
+
+    console.log(`[${instanceId}] Sending image to ${jid}`);
+
+    try {
+      const result = await instance.socket.sendMessage(jid, {
+        image: { url: imageUrl },
+        caption
+      });
+      return { success: true, messageId: result.key.id };
+    } catch (error) {
+      console.error(`[${instanceId}] Error sending image:`, error);
+      throw error;
+    }
+  }
+
+  async sendDocument(instanceId, to, documentUrl, filename, caption = '') {
+    const instance = this.instances.get(instanceId);
+    if (!instance || !instance.socket) {
+      throw new Error('Instance not found or not connected');
+    }
+
+    if (instance.status !== 'connected') {
+      throw new Error('Instance is not connected');
+    }
+
+    let jid = to;
+    if (!jid.includes('@')) {
+      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
+    }
+
+    console.log(`[${instanceId}] Sending document to ${jid}`);
+
+    try {
+      const result = await instance.socket.sendMessage(jid, {
+        document: { url: documentUrl },
+        fileName: filename,
+        caption
+      });
+      return { success: true, messageId: result.key.id };
+    } catch (error) {
+      console.error(`[${instanceId}] Error sending document:`, error);
+      throw error;
+    }
+  }
+
+  async sendAudio(instanceId, to, audioUrl) {
+    const instance = this.instances.get(instanceId);
+    if (!instance || !instance.socket) {
+      throw new Error('Instance not found or not connected');
+    }
+
+    if (instance.status !== 'connected') {
+      throw new Error('Instance is not connected');
+    }
+
+    let jid = to;
+    if (!jid.includes('@')) {
+      jid = jid.replace(/\D/g, '') + '@s.whatsapp.net';
+    }
+
+    console.log(`[${instanceId}] Sending audio to ${jid}`);
+
+    try {
+      const result = await instance.socket.sendMessage(jid, {
+        audio: { url: audioUrl },
+        mimetype: 'audio/mpeg',
+        ptt: true
+      });
+      return { success: true, messageId: result.key.id };
+    } catch (error) {
+      console.error(`[${instanceId}] Error sending audio:`, error);
+      throw error;
     }
   }
 
   async sendWebhook(url, data) {
     try {
-      await fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
+      console.log(`Webhook sent to ${url}, status: ${response.status}`);
     } catch (error) {
-      console.error('Error sending webhook:', error);
+      console.error(`Error sending webhook to ${url}:`, error.message);
     }
   }
 
-  // WebSocket connections management
-  wsConnections = new Map(); // instanceId -> Set of WebSocket clients
-  legacyWsNotifier = null; // Legacy notifier for routes.js compatibility
-
-  // Legacy method for routes.js compatibility
-  setWsNotifier(notifier) {
-    this.legacyWsNotifier = notifier;
-  }
-
-  addWebSocketConnection(instanceId, ws) {
-    if (!this.wsConnections.has(instanceId)) {
-      this.wsConnections.set(instanceId, new Set());
-    }
-    this.wsConnections.get(instanceId).add(ws);
-    console.log(`WebSocket connected for instance: ${instanceId}`);
-  }
-
-  removeWebSocketConnection(instanceId, ws) {
-    if (this.wsConnections.has(instanceId)) {
-      this.wsConnections.get(instanceId).delete(ws);
-      console.log(`WebSocket disconnected for instance: ${instanceId}`);
-    }
-  }
-
-  notifyWebSocket(instanceId, data) {
-    // Use legacy notifier if available (for routes.js compatibility)
-    if (this.legacyWsNotifier) {
-      try {
-        this.legacyWsNotifier(instanceId, data);
-      } catch (e) {
-        console.error(`[${instanceId}] Error in legacy WebSocket notifier:`, e.message);
-      }
-    }
-    
-    // Also use the new connection management
-    const connections = this.wsConnections.get(instanceId);
-    if (connections && connections.size > 0) {
-      const message = JSON.stringify(data);
-      console.log(`[${instanceId}] Notifying ${connections.size} WebSocket clients:`, message);
-      for (const ws of connections) {
-        try {
-          if (ws.readyState === 1) { // WebSocket.OPEN
-            ws.send(message);
-          }
-        } catch (e) {
-          console.error(`[${instanceId}] Error sending WebSocket message:`, e.message);
-        }
-      }
-    } else if (!this.legacyWsNotifier) {
-      console.log(`[${instanceId}] No WebSocket clients to notify`);
-    }
-  }
-
-  // Get QR code for instance
-  getQRCode(instanceId) {
+  setWebhook(instanceId, webhookUrl) {
     const instance = this.instances.get(instanceId);
     if (!instance) {
-      return { error: 'Instance not found' };
+      return false;
     }
-    
-    return {
-      qrCode: instance.qrCode,
-      status: instance.status
-    };
+    instance.webhookUrl = webhookUrl;
+    this.saveInstancesToFile();
+    return true;
   }
 }
 
