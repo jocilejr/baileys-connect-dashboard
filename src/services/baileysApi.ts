@@ -1,4 +1,5 @@
-const API_BASE_URL = 'http://72.60.249.69:3001/api/v1';
+const PROXY_URL = 'https://ysvnadhzkidrshqgvgni.supabase.co/functions/v1/baileys-proxy';
+const ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlzdm5hZGh6a2lkcnNocWd2Z25pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3MjY3MDAsImV4cCI6MjA4MDMwMjcwMH0.UbcaPV9mYQhsWlzm0Aol24n6VC6mvSrh_uVfwriPnJc';
 
 interface ApiResponse<T = unknown> {
   success: boolean;
@@ -24,71 +25,60 @@ interface SendMessageResponse {
   messageId?: string;
 }
 
-const handleResponse = async <T>(response: Response): Promise<ApiResponse<T>> => {
-  if (!response.ok) {
-    const error = await response.text();
-    return { success: false, error };
+const proxyRequest = async <T>(path: string, options?: RequestInit): Promise<ApiResponse<T>> => {
+  try {
+    const url = `${PROXY_URL}?path=${encodeURIComponent(path)}`;
+    
+    const response = await fetch(url, {
+      method: options?.method || 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${ANON_KEY}`,
+      },
+      body: options?.body,
+    });
+
+    const data = await response.json();
+    
+    if (!response.ok) {
+      return { success: false, error: data.error || 'Request failed' };
+    }
+
+    return data;
+  } catch (error) {
+    console.error('API Error:', error);
+    return { success: false, error: 'Erro de conexão com o servidor' };
   }
-  const data = await response.json();
-  return { success: true, data };
 };
 
 export const baileysApi = {
-  // Instances
   createInstance: async (name: string, webhookUrl?: string): Promise<ApiResponse<CreateInstanceResponse>> => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/instance/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, webhookUrl }),
-      });
-      return handleResponse<CreateInstanceResponse>(response);
-    } catch (error) {
-      return { success: false, error: 'Erro de conexão com o servidor' };
-    }
+    return proxyRequest<CreateInstanceResponse>('/api/v1/instance/create', {
+      method: 'POST',
+      body: JSON.stringify({ name, webhookUrl }),
+    });
   },
 
   listInstances: async (): Promise<ApiResponse<InstanceStatusResponse[]>> => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/instance/list`);
-      return handleResponse<InstanceStatusResponse[]>(response);
-    } catch (error) {
-      return { success: false, error: 'Erro de conexão com o servidor' };
-    }
+    return proxyRequest<InstanceStatusResponse[]>('/api/v1/instance/list');
   },
 
   getInstanceStatus: async (instanceId: string): Promise<ApiResponse<InstanceStatusResponse>> => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/instance/${instanceId}/status`);
-      return handleResponse<InstanceStatusResponse>(response);
-    } catch (error) {
-      return { success: false, error: 'Erro de conexão com o servidor' };
-    }
+    return proxyRequest<InstanceStatusResponse>(`/api/v1/instance/${instanceId}/status`);
   },
 
   deleteInstance: async (instanceId: string): Promise<ApiResponse<void>> => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/instance/${instanceId}`, {
-        method: 'DELETE',
-      });
-      return handleResponse<void>(response);
-    } catch (error) {
-      return { success: false, error: 'Erro de conexão com o servidor' };
-    }
+    return proxyRequest<void>(`/api/v1/instance/${instanceId}`, {
+      method: 'DELETE',
+    });
   },
 
   reconnectInstance: async (instanceId: string): Promise<ApiResponse<void>> => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/instance/${instanceId}/reconnect`, {
-        method: 'POST',
-      });
-      return handleResponse<void>(response);
-    } catch (error) {
-      return { success: false, error: 'Erro de conexão com o servidor' };
-    }
+    return proxyRequest<void>(`/api/v1/instance/${instanceId}/reconnect`, {
+      method: 'POST',
+    });
   },
 
-  // Messages
   sendMessage: async (
     instanceId: string,
     to: string,
@@ -96,20 +86,14 @@ export const baileysApi = {
     type: 'text' | 'image' | 'document' | 'audio' = 'text',
     mediaUrl?: string
   ): Promise<ApiResponse<SendMessageResponse>> => {
-    try {
-      const endpoint = type === 'text' ? 'send' : `send-${type}`;
-      const body: Record<string, string> = { instanceId, to, message };
-      if (mediaUrl) body.mediaUrl = mediaUrl;
+    const endpoint = type === 'text' ? 'send' : `send-${type}`;
+    const body: Record<string, string> = { instanceId, to, message };
+    if (mediaUrl) body.mediaUrl = mediaUrl;
 
-      const response = await fetch(`${API_BASE_URL}/message/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      return handleResponse<SendMessageResponse>(response);
-    } catch (error) {
-      return { success: false, error: 'Erro de conexão com o servidor' };
-    }
+    return proxyRequest<SendMessageResponse>(`/api/v1/message/${endpoint}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   },
 };
 
