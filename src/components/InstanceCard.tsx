@@ -47,6 +47,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
 
   // HTTP polling for QR code as fallback
   const pollForQRCode = useCallback(async () => {
+    // Guard: don't poll if instance.id is missing
+    if (!instance.id) return;
     if (instance.status !== 'qr_pending' && instance.status !== 'connecting') return;
     
     try {
@@ -67,6 +69,9 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
 
   // Start polling when status is qr_pending and no QR code
   useEffect(() => {
+    // Guard: don't poll if instance.id is missing
+    if (!instance.id) return;
+    
     const shouldPoll = (instance.status === 'qr_pending' || instance.status === 'connecting') && !currentQR;
     
     if (shouldPoll && !isPolling) {
@@ -127,7 +132,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
 
   // Keep WebSocket connected while waiting for QR or during connection process
   // Only disconnect when fully connected or explicitly disconnected
-  const shouldConnect = instance.status !== 'connected' && instance.status !== 'disconnected';
+  const shouldConnect = !!instance.id && instance.status !== 'connected' && instance.status !== 'disconnected';
   
   const { isConnected: wsConnected } = useBaileysWebSocket({
     instanceId: instance.id,
