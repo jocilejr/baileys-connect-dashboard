@@ -91,6 +91,25 @@ router.post('/instance/:instanceId/reconnect', async (req, res) => {
   res.json({ success: true, message: 'Reconnecting...' });
 });
 
+// Request pairing code (alternative to QR)
+router.post('/instance/:instanceId/pairing-code', async (req, res) => {
+  const { instanceId } = req.params;
+  const { phoneNumber } = req.body;
+  
+  if (!phoneNumber) {
+    return res.status(400).json({ error: 'phoneNumber is required' });
+  }
+
+  const instanceManager = getInstanceManager(req);
+  const result = await instanceManager.requestPairingCode(instanceId, phoneNumber);
+  
+  if (result.error) {
+    return res.status(400).json(result);
+  }
+  
+  res.json(result);
+});
+
 // Update webhook
 router.put('/instance/:instanceId/webhook', (req, res) => {
   const { instanceId } = req.params;
