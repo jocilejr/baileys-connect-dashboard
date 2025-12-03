@@ -74,6 +74,7 @@ const generateInstanceId = () => {
 export const baileysApi = {
   createInstance: async (name: string, webhookUrl?: string): Promise<ApiResponse<CreateInstanceResponse>> => {
     const instanceId = generateInstanceId();
+    console.log(`[baileysApi] Criando instância: ${instanceId}, nome: ${name}`);
     return proxyRequest<CreateInstanceResponse>('/api/v1/instance/create', {
       method: 'POST',
       body: JSON.stringify({ instanceId, name, webhookUrl }),
@@ -81,28 +82,38 @@ export const baileysApi = {
   },
 
   listInstances: async (): Promise<ApiResponse<InstanceStatusResponse[]>> => {
+    console.log('[baileysApi] Listando instâncias...');
     const response = await proxyRequest<{ instances: InstanceStatusResponse[] }>('/api/v1/instance/list');
+    console.log('[baileysApi] Resposta listInstances:', response);
     if (response.success && response.data?.instances) {
       return { success: true, data: response.data.instances };
+    }
+    // Se não tem instances, retorna array vazio
+    if (response.success) {
+      return { success: true, data: [] };
     }
     return { success: response.success, data: [], error: response.error };
   },
 
   getInstanceStatus: async (instanceId: string): Promise<ApiResponse<InstanceStatusResponse>> => {
+    console.log(`[baileysApi] Obtendo status da instância: ${instanceId}`);
     return proxyRequest<InstanceStatusResponse>(`/api/v1/instance/${instanceId}/status`);
   },
 
   getQRCode: async (instanceId: string): Promise<ApiResponse<{ qrCode: string | null }>> => {
+    console.log(`[baileysApi] Obtendo QR code da instância: ${instanceId}`);
     return proxyRequest<{ qrCode: string | null }>(`/api/v1/instance/${instanceId}/qr`);
   },
 
   deleteInstance: async (instanceId: string): Promise<ApiResponse<void>> => {
+    console.log(`[baileysApi] Deletando instância: ${instanceId}`);
     return proxyRequest<void>(`/api/v1/instance/${instanceId}`, {
       method: 'DELETE',
     });
   },
 
   reconnectInstance: async (instanceId: string): Promise<ApiResponse<void>> => {
+    console.log(`[baileysApi] Reconectando instância: ${instanceId}`);
     return proxyRequest<void>(`/api/v1/instance/${instanceId}/reconnect`, {
       method: 'POST',
     });
@@ -119,6 +130,7 @@ export const baileysApi = {
     const body: Record<string, string> = { instanceId, to, message };
     if (mediaUrl) body.mediaUrl = mediaUrl;
 
+    console.log(`[baileysApi] Enviando mensagem: ${instanceId} -> ${to}`);
     return proxyRequest<SendMessageResponse>(`/api/v1/message/${endpoint}`, {
       method: 'POST',
       body: JSON.stringify(body),
