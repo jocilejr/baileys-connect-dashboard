@@ -52,6 +52,7 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
         <div className="relative bg-white p-4 rounded-xl">
           {isDataUrl ? (
             <img 
+              key={qrCode.substring(0, 100)}  // Force re-render on QR change
               src={qrCode} 
               alt="QR Code WhatsApp" 
               className="w-[200px] h-[200px] rounded-lg"
