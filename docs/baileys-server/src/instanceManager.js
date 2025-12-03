@@ -427,6 +427,50 @@ class InstanceManager {
     return instance?.qrCode || null;
   }
 
+  async requestPairingCode(instanceId, phoneNumber) {
+    const instance = this.instances.get(instanceId);
+    if (!instance) {
+      return { success: false, error: 'Instance not found' };
+    }
+
+    if (!instance.socket) {
+      return { success: false, error: 'Socket not initialized' };
+    }
+
+    // Clean phone number - remove all non-digits
+    const cleanNumber = phoneNumber.replace(/\D/g, '');
+    
+    if (cleanNumber.length < 10) {
+      return { success: false, error: 'Invalid phone number' };
+    }
+
+    try {
+      console.log(`[${instanceId}] Requesting pairing code for: ${cleanNumber}`);
+      
+      // Check if already registered
+      if (instance.socket.authState?.creds?.registered) {
+        return { success: false, error: 'Already registered, please delete instance and create new one' };
+      }
+
+      const code = await instance.socket.requestPairingCode(cleanNumber);
+      console.log(`[${instanceId}] Pairing code received: ${code}`);
+      
+      // Store pairing code and notify via WebSocket
+      instance.pairingCode = code;
+      instance.status = 'pairing_pending';
+      
+      this.notifyWebSocket(instanceId, {
+        type: 'pairing_code',
+        pairingCode: code
+      });
+
+      return { success: true, pairingCode: code };
+    } catch (error) {
+      console.error(`[${instanceId}] Error requesting pairing code:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
   async sendMessage(instanceId, to, message, type = 'text', mediaUrl = null) {
     const instance = this.instances.get(instanceId);
     if (!instance || !instance.socket) {

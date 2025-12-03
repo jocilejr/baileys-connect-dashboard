@@ -119,6 +119,14 @@ export const baileysApi = {
     });
   },
 
+  requestPairingCode: async (instanceId: string, phoneNumber: string): Promise<ApiResponse<{ pairingCode: string }>> => {
+    console.log(`[baileysApi] Solicitando código de pareamento: ${instanceId} -> ${phoneNumber}`);
+    return proxyRequest<{ pairingCode: string }>(`/api/v1/instance/${instanceId}/pairing-code`, {
+      method: 'POST',
+      body: JSON.stringify({ phoneNumber }),
+    });
+  },
+
   sendMessage: async (
     instanceId: string,
     to: string,

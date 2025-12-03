@@ -4,6 +4,7 @@ import { StatusBadge } from './StatusBadge';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Input } from './ui/input';
 import { 
   MoreVertical, 
   Trash2, 
@@ -13,7 +14,8 @@ import {
   Copy, 
   Check,
   Power,
-  PowerOff
+  PowerOff,
+  Smartphone
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -43,6 +45,10 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const [copied, setCopied] = useState(false);
   const [currentQR, setCurrentQR] = useState<string | undefined>(instance.qrCode);
   const [isPolling, setIsPolling] = useState(false);
+  const [usePairingCode, setUsePairingCode] = useState(false);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [isRequestingCode, setIsRequestingCode] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isStaleRef = useRef(false); // Track if instance was marked as not found on server
   const isReconnectingRef = useRef(false); // Track if we're in reconnection grace period
@@ -404,6 +410,52 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleRequestPairingCode = async () => {
+    if (!phoneNumber || phoneNumber.length < 10) {
+      toast({
+        title: 'Número inválido',
+        description: 'Digite um número de telefone válido com DDI (ex: 5511999999999)',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsRequestingCode(true);
+    setPairingCode(null);
+    
+    try {
+      // First make sure instance is in connecting state
+      await reconnectInstance(instance.id);
+      
+      // Wait a bit for socket to initialize
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const response = await baileysApi.requestPairingCode(instance.id, phoneNumber);
+      
+      if (response.success && response.data?.pairingCode) {
+        setPairingCode(response.data.pairingCode);
+        toast({
+          title: 'Código gerado!',
+          description: 'Digite este código no WhatsApp do seu celular.',
+        });
+      } else {
+        toast({
+          title: 'Erro ao gerar código',
+          description: response.error || 'Tente novamente',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      toast({
+        title: 'Erro',
+        description: 'Não foi possível gerar o código de pareamento',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsRequestingCode(false);
+    }
+  };
+
   const handleConnect = async () => {
     // Reset all flags when user manually connects
     isStaleRef.current = false;
@@ -411,6 +463,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     reconnectAttemptRef.current = 0;
     autoReconnectCountRef.current = 0; // Reset auto-reconnect counter on manual connect
     setCurrentQR(undefined); // Clear current QR to trigger polling
+    setPairingCode(null);
+    setUsePairingCode(false);
     await reconnectInstance(instance.id);
     toast({
       title: 'Gerando QR Code...',
@@ -420,6 +474,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
 
   const handleDisconnect = () => {
     setCurrentQR(undefined);
+    setPairingCode(null);
+    setUsePairingCode(false);
     updateInstanceStatus(instance.id, 'disconnected');
     toast({
       title: 'Desconectado',
@@ -512,15 +568,78 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       <CardContent className="space-y-4">
         {instance.status === 'qr_pending' && (
           <div className="flex flex-col items-center py-4">
-            {(currentQR || instance.qrCode) ? (
-              <QRCodeDisplay 
-                qrCode={currentQR || instance.qrCode || ''} 
-                onRefresh={handleRefreshQR}
-              />
+            {/* Toggle between QR and Pairing Code */}
+            <div className="flex gap-2 mb-4">
+              <Button 
+                variant={!usePairingCode ? "default" : "outline"} 
+                size="sm"
+                onClick={() => setUsePairingCode(false)}
+              >
+                QR Code
+              </Button>
+              <Button 
+                variant={usePairingCode ? "default" : "outline"} 
+                size="sm"
+                onClick={() => setUsePairingCode(true)}
+              >
+                <Smartphone className="w-4 h-4 mr-1" />
+                Código
+              </Button>
+            </div>
+
+            {!usePairingCode ? (
+              // QR Code mode
+              (currentQR || instance.qrCode) ? (
+                <QRCodeDisplay 
+                  qrCode={currentQR || instance.qrCode || ''} 
+                  onRefresh={handleRefreshQR}
+                />
+              ) : (
+                <div className="flex flex-col items-center py-8 text-center">
+                  <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4" />
+                  <p className="text-sm text-muted-foreground">Aguardando QR Code...</p>
+                </div>
+              )
             ) : (
-              <div className="flex flex-col items-center py-8 text-center">
-                <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin mb-4" />
-                <p className="text-sm text-muted-foreground">Aguardando QR Code...</p>
+              // Pairing Code mode
+              <div className="w-full max-w-xs space-y-4">
+                {pairingCode ? (
+                  <div className="text-center space-y-3">
+                    <p className="text-sm text-muted-foreground">Digite este código no WhatsApp:</p>
+                    <div className="text-3xl font-mono font-bold tracking-widest bg-muted p-4 rounded-lg">
+                      {pairingCode}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      WhatsApp → Dispositivos Conectados → Conectar Dispositivo → Conectar com número de telefone
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-sm text-muted-foreground text-center">
+                      Digite seu número com DDI (ex: 5511999999999)
+                    </p>
+                    <Input
+                      placeholder="5511999999999"
+                      value={phoneNumber}
+                      onChange={(e) => setPhoneNumber(e.target.value.replace(/\D/g, ''))}
+                      className="text-center text-lg"
+                    />
+                    <Button 
+                      onClick={handleRequestPairingCode} 
+                      className="w-full"
+                      disabled={isRequestingCode || phoneNumber.length < 10}
+                    >
+                      {isRequestingCode ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2" />
+                          Gerando código...
+                        </>
+                      ) : (
+                        'Gerar Código de Pareamento'
+                      )}
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>
