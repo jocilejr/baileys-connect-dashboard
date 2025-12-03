@@ -177,12 +177,14 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   };
 
   const handleDelete = async () => {
-    await removeInstance(instance.id);
-    toast({
-      title: 'Instância removida',
-      description: `A instância "${instance.name}" foi removida.`,
-      variant: 'destructive',
-    });
+    const success = await removeInstance(instance.id);
+    if (success) {
+      toast({
+        title: 'Instância removida',
+        description: `A instância "${instance.name}" foi removida.`,
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleRefreshQR = async () => {
