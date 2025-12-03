@@ -51,6 +51,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const currentStatusRef = useRef(instance.status); // Track current status for callbacks
   const qrGracePeriodRef = useRef(false); // Grace period after QR shown to allow 515 reconnect
   const qrGraceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null); // Status polling interval
   const MAX_AUTO_RECONNECTS = 3;
   const QR_GRACE_PERIOD_MS = 30000; // 30 seconds grace period after QR is shown
 
@@ -207,6 +208,11 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         clearTimeout(qrGraceTimeoutRef.current);
         qrGraceTimeoutRef.current = null;
       }
+      // Clear status polling interval
+      if (statusPollIntervalRef.current) {
+        clearInterval(statusPollIntervalRef.current);
+        statusPollIntervalRef.current = null;
+      }
       pollingActiveRef.current = false;
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -269,6 +275,54 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     
     updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
   }, [instance.id, updateInstanceStatus, reconnectInstance]);
+
+  // Status polling as fallback for WebSocket failures  
+  const pollInstanceStatus = useCallback(async () => {
+    if (!instance.id || currentStatusRef.current === 'connected' || currentStatusRef.current === 'disconnected') {
+      return;
+    }
+    
+    try {
+      const response = await baileysApi.getInstanceStatus(instance.id);
+      console.log(`[InstanceCard] Status poll para ${instance.id}:`, response);
+      
+      if (response.success && response.data) {
+        const serverStatus = response.data.status;
+        const phone = response.data.phone;
+        
+        // Map server status to our status type
+        if (serverStatus === 'connected' || serverStatus === 'open') {
+          console.log(`[InstanceCard] Detectado connected via polling para ${instance.id}`);
+          // Trigger the same logic as WebSocket status change
+          handleStatusChange('connected', phone);
+        }
+      }
+    } catch (error) {
+      console.log('[InstanceCard] Erro no polling de status:', error);
+    }
+  }, [instance.id, handleStatusChange]);
+
+  // Start status polling when QR is displayed (to catch successful connections)
+  useEffect(() => {
+    const shouldPollStatus = instance.status === 'qr_pending' && (currentQR || instance.qrCode);
+    
+    if (shouldPollStatus && !statusPollIntervalRef.current) {
+      console.log(`[InstanceCard] Iniciando status polling para ${instance.id}`);
+      // Poll every 3 seconds to detect connection
+      statusPollIntervalRef.current = setInterval(pollInstanceStatus, 3000);
+    } else if (!shouldPollStatus && statusPollIntervalRef.current) {
+      console.log(`[InstanceCard] Parando status polling para ${instance.id}`);
+      clearInterval(statusPollIntervalRef.current);
+      statusPollIntervalRef.current = null;
+    }
+    
+    return () => {
+      if (statusPollIntervalRef.current) {
+        clearInterval(statusPollIntervalRef.current);
+        statusPollIntervalRef.current = null;
+      }
+    };
+  }, [instance.id, instance.status, currentQR, instance.qrCode, pollInstanceStatus]);
 
   const handleError = useCallback((error: string) => {
     console.error(`[InstanceCard] Erro para ${instance.id}: ${error}`);
