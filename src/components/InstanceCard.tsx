@@ -47,6 +47,8 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
   const isStaleRef = useRef(false); // Track if instance was marked as not found on server
   const isReconnectingRef = useRef(false); // Track if we're in reconnection grace period
   const reconnectAttemptRef = useRef(0); // Count 404 errors during reconnection
+  const autoReconnectCountRef = useRef(0); // Limit auto-reconnects when QR expires
+  const MAX_AUTO_RECONNECTS = 3;
 
   // HTTP polling for QR code as fallback
   const pollForQRCode = useCallback(async () => {
@@ -149,27 +151,41 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       status === 'connecting' ? 'connecting' :
       status === 'qr' || status === 'qr_pending' ? 'qr_pending' : 'disconnected';
     
-    // If QR expired (disconnected while in qr_pending), auto-reconnect instead of going to disconnected
-    if (mappedStatus === 'disconnected' && instance.status === 'qr_pending') {
-      console.log(`[InstanceCard] QR expirou para ${instance.id}, auto-reconectando...`);
-      // Reset flags and trigger reconnection
-      isStaleRef.current = false;
-      isReconnectingRef.current = true;
-      reconnectAttemptRef.current = 0;
-      setCurrentQR(undefined);
-      reconnectInstance(instance.id);
-      return; // Don't update to disconnected, stay in qr_pending
-    }
-    
-    updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
-    
+    // If connected successfully, reset auto-reconnect counter
     if (mappedStatus === 'connected') {
+      autoReconnectCountRef.current = 0;
       setCurrentQR(undefined);
+      updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
       toast({
         title: 'Conectado!',
         description: `WhatsApp conectado com sucesso.`,
       });
+      return;
     }
+    
+    // If QR expired (disconnected while in qr_pending), auto-reconnect with limit
+    if (mappedStatus === 'disconnected' && instance.status === 'qr_pending') {
+      if (autoReconnectCountRef.current < MAX_AUTO_RECONNECTS) {
+        autoReconnectCountRef.current += 1;
+        console.log(`[InstanceCard] QR expirou para ${instance.id}, auto-reconectando... (tentativa ${autoReconnectCountRef.current}/${MAX_AUTO_RECONNECTS})`);
+        isStaleRef.current = false;
+        isReconnectingRef.current = true;
+        reconnectAttemptRef.current = 0;
+        setCurrentQR(undefined);
+        reconnectInstance(instance.id);
+        return; // Don't update to disconnected, stay in qr_pending
+      } else {
+        console.log(`[InstanceCard] Limite de auto-reconexão atingido para ${instance.id}`);
+        autoReconnectCountRef.current = 0; // Reset for next manual attempt
+        toast({
+          title: 'QR Code expirou',
+          description: 'Clique em Conectar para tentar novamente.',
+          variant: 'destructive',
+        });
+      }
+    }
+    
+    updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
   }, [instance.id, instance.status, updateInstanceStatus, reconnectInstance]);
 
   const handleError = useCallback((error: string) => {
@@ -208,6 +224,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     isStaleRef.current = false;
     isReconnectingRef.current = true; // Enable grace period for 404 errors
     reconnectAttemptRef.current = 0;
+    autoReconnectCountRef.current = 0; // Reset auto-reconnect counter on manual connect
     setCurrentQR(undefined); // Clear current QR to trigger polling
     await reconnectInstance(instance.id);
     toast({
