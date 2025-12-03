@@ -149,6 +149,18 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       status === 'connecting' ? 'connecting' :
       status === 'qr' || status === 'qr_pending' ? 'qr_pending' : 'disconnected';
     
+    // If QR expired (disconnected while in qr_pending), auto-reconnect instead of going to disconnected
+    if (mappedStatus === 'disconnected' && instance.status === 'qr_pending') {
+      console.log(`[InstanceCard] QR expirou para ${instance.id}, auto-reconectando...`);
+      // Reset flags and trigger reconnection
+      isStaleRef.current = false;
+      isReconnectingRef.current = true;
+      reconnectAttemptRef.current = 0;
+      setCurrentQR(undefined);
+      reconnectInstance(instance.id);
+      return; // Don't update to disconnected, stay in qr_pending
+    }
+    
     updateInstanceStatus(instance.id, mappedStatus, undefined, phone);
     
     if (mappedStatus === 'connected') {
@@ -158,7 +170,7 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         description: `WhatsApp conectado com sucesso.`,
       });
     }
-  }, [instance.id, updateInstanceStatus]);
+  }, [instance.id, instance.status, updateInstanceStatus, reconnectInstance]);
 
   const handleError = useCallback((error: string) => {
     console.error(`[InstanceCard] Erro para ${instance.id}: ${error}`);
