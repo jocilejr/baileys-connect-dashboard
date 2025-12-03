@@ -10,8 +10,8 @@ const fs = require('fs');
 const QRCode = require('qrcode');
 
 const logger = pino({ level: 'silent' });
-// Stable version recommended by Baileys maintainers - DO NOT use fetchLatestBaileysVersion
-const STABLE_VERSION = [2, 3000, 1015901307];
+// WhatsApp version - updated October 2025 to fix 405 error
+const STABLE_VERSION = [2, 3000, 1027934701];
 
 class InstanceManager {
   constructor() {
