@@ -72,20 +72,28 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
         isReconnectingRef.current = false;
         reconnectAttemptRef.current = 0;
       } else if (response.error === 'Instance not found') {
-        // During reconnection, allow up to 10 retries (20 seconds) for server to recreate instance
+        // During reconnection grace period, allow retries
         if (isReconnectingRef.current && reconnectAttemptRef.current < 10) {
           reconnectAttemptRef.current += 1;
           console.log(`[InstanceCard] Aguardando servidor recriar instância ${instance.id} (tentativa ${reconnectAttemptRef.current}/10)...`);
           return; // Keep polling, don't mark as stale yet
         }
         
-        // Instance was removed from server (server restart, etc) or too many retries
-        console.log(`[InstanceCard] Instância ${instance.id} não encontrada no servidor, marcando como stale`);
-        // Mark as stale to prevent further reconnection attempts
+        // Not in reconnection mode - trigger reconnect automatically
+        if (!isReconnectingRef.current && autoReconnectCountRef.current < MAX_AUTO_RECONNECTS) {
+          autoReconnectCountRef.current += 1;
+          isReconnectingRef.current = true;
+          reconnectAttemptRef.current = 0;
+          console.log(`[InstanceCard] Instância ${instance.id} não encontrada, reconectando automaticamente (tentativa ${autoReconnectCountRef.current}/${MAX_AUTO_RECONNECTS})...`);
+          reconnectInstance(instance.id);
+          return; // Keep polling to get new QR
+        }
+        
+        // Too many reconnect attempts - mark as stale
+        console.log(`[InstanceCard] Limite de reconexão atingido para ${instance.id}, marcando como stale`);
         isStaleRef.current = true;
         isReconnectingRef.current = false;
         reconnectAttemptRef.current = 0;
-        // Stop polling immediately
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
