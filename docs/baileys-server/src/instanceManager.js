@@ -765,6 +765,12 @@ class InstanceManager {
 
   // WebSocket connections management
   wsConnections = new Map(); // instanceId -> Set of WebSocket clients
+  legacyWsNotifier = null; // Legacy notifier for routes.js compatibility
+
+  // Legacy method for routes.js compatibility
+  setWsNotifier(notifier) {
+    this.legacyWsNotifier = notifier;
+  }
 
   addWebSocketConnection(instanceId, ws) {
     if (!this.wsConnections.has(instanceId)) {
@@ -782,6 +788,16 @@ class InstanceManager {
   }
 
   notifyWebSocket(instanceId, data) {
+    // Use legacy notifier if available (for routes.js compatibility)
+    if (this.legacyWsNotifier) {
+      try {
+        this.legacyWsNotifier(instanceId, data);
+      } catch (e) {
+        console.error(`[${instanceId}] Error in legacy WebSocket notifier:`, e.message);
+      }
+    }
+    
+    // Also use the new connection management
     const connections = this.wsConnections.get(instanceId);
     if (connections && connections.size > 0) {
       const message = JSON.stringify(data);
@@ -795,7 +811,7 @@ class InstanceManager {
           console.error(`[${instanceId}] Error sending WebSocket message:`, e.message);
         }
       }
-    } else {
+    } else if (!this.legacyWsNotifier) {
       console.log(`[${instanceId}] No WebSocket clients to notify`);
     }
   }
