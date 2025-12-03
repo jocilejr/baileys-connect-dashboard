@@ -184,6 +184,19 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
       return;
     }
     
+    // If disconnected while previously connected, show notification
+    if (mappedStatus === 'disconnected' && currentStatusRef.current === 'connected') {
+      console.log(`[InstanceCard] Desconectado após estar conectado para ${instance.id}`);
+      setCurrentQR(undefined);
+      updateInstanceStatus(instance.id, mappedStatus);
+      toast({
+        title: 'Desconectado',
+        description: 'O WhatsApp foi desconectado. O dispositivo pode ter sido removido.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
     // If QR expired (disconnected while in qr_pending), auto-reconnect with limit
     // Use ref to get current status instead of stale prop value
     if (mappedStatus === 'disconnected' && currentStatusRef.current === 'qr_pending') {
@@ -219,9 +232,9 @@ export const InstanceCard: React.FC<InstanceCardProps> = ({
     });
   }, [instance.id]);
 
-  // Keep WebSocket connected while waiting for QR or during connection process
-  // Only disconnect when fully connected or explicitly disconnected
-  const shouldConnect = !!instance.id && instance.status !== 'connected' && instance.status !== 'disconnected';
+  // Keep WebSocket connected for ALL states except disconnected
+  // This allows us to receive disconnection events (like 401 errors)
+  const shouldConnect = !!instance.id && instance.status !== 'disconnected';
   
   const { isConnected: wsConnected } = useBaileysWebSocket({
     instanceId: instance.id,

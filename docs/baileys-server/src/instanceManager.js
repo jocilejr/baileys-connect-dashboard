@@ -283,6 +283,30 @@ class InstanceManager {
             return;
           }
           
+          // Handle 401 (Unauthorized) - device was removed from WhatsApp
+          // This happens when user removes the linked device from their phone
+          if (statusCode === 401) {
+            console.log(`[${instanceId}] Device removed or unauthorized (401) - marking as disconnected`);
+            instance.status = 'disconnected';
+            instance.qrCode = null;
+            instance.phone = null;
+            instance.hadNewLogin = false;
+            
+            // Delete session files since device was removed
+            const sessionPath = path.join(this.sessionsPath, instanceId);
+            if (fs.existsSync(sessionPath)) {
+              console.log(`[${instanceId}] Deleting session files after 401...`);
+              fs.rmSync(sessionPath, { recursive: true });
+            }
+            
+            // Notify frontend about disconnection
+            this.notifyWebSocket(instanceId, {
+              type: 'status',
+              status: 'disconnected'
+            });
+            return;
+          }
+          
           // Only mark as disconnected and require new QR if user logged out
           if (isLoggedOut) {
             console.log(`[${instanceId}] User logged out - will need new QR`);
